@@ -13,7 +13,11 @@ import com.intellij.mcpserver.reportToolActivity
 import com.intellij.mcpserver.toolsets.Constants
 import com.intellij.mcpserver.util.resolveInProject
 import com.intellij.openapi.application.readAction
+import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.xdebugger.XDebuggerManager
 import com.intellij.xdebugger.XDebuggerUtil
 import com.intellij.xdebugger.breakpoints.SuspendPolicy
@@ -39,6 +43,8 @@ class DebugToolset : McpToolset {
     path: String,
     @McpDescription("1-based line number where the breakpoint should be set")
     line: Int,
+    @McpDescription("Source text of the line where the breakpoint should be set")
+    content: String,
   ): BreakpointResult {
     currentCoroutineContext().reportToolActivity(McpServerBundle.message("tool.activity.setting.breakpoint", path, line))
     val project = currentCoroutineContext().project
@@ -50,6 +56,11 @@ class DebugToolset : McpToolset {
     val lineZeroBased = line - 1
 
     return readAction {
+      val actual = lineContent(file, lineZeroBased)
+      if (actual == null || actual.trim() != content.trim()) {
+        mcpFail("Line $line contains '${actual ?: ""}', not '${content}'. Re-read the file and pass the exact source text of the target line.")
+      }
+
       val manager = XDebuggerManager.getInstance(project).breakpointManager
 
       // Check if a breakpoint already exists at this location
@@ -58,7 +69,8 @@ class DebugToolset : McpToolset {
         .firstOrNull { it.fileUrl == file.url && it.line == lineZeroBased }
 
       if (existing != null) {
-        return@readAction BreakpointResult(path = path, line = line, status = "already_exists")
+        return@readAction BreakpointResult(path = path, line = line, status = "already_exists",
+                                           content = actual)
       }
 
       // Verify that at least one breakpoint type supports this location
@@ -72,7 +84,7 @@ class DebugToolset : McpToolset {
       // it handles type-safe addLineBreakpoint internally. Since we confirmed above
       // that no breakpoint exists here, toggle = add.
       XDebuggerUtil.getInstance().toggleLineBreakpoint(project, file, lineZeroBased)
-      BreakpointResult(path = path, line = line, status = "created")
+      BreakpointResult(path = path, line = line, status = "created", content = actual)
     }
   }
 
@@ -103,11 +115,13 @@ class DebugToolset : McpToolset {
         .filter { it.fileUrl == file.url && it.line == lineZeroBased }
 
       if (targets.isEmpty()) {
-        return@readAction BreakpointResult(path = path, line = line, status = "not_found")
+        return@readAction BreakpointResult(path = path, line = line, status = "not_found",
+                                           content = lineContent(file, lineZeroBased))
       }
 
+      val content = lineContent(file, lineZeroBased)
       targets.forEach { manager.removeBreakpoint(it) }
-      BreakpointResult(path = path, line = line, status = "removed")
+      BreakpointResult(path = path, line = line, status = "removed", content = content)
     }
   }
 
@@ -158,7 +172,8 @@ class DebugToolset : McpToolset {
       val bp = manager.allBreakpoints
         .filterIsInstance<XLineBreakpoint<*>>()
         .firstOrNull { it.fileUrl == file.url && it.line == lineZeroBased }
-        ?: return@readAction BreakpointResult(path = path, line = line, status = "not_found")
+        ?: return@readAction BreakpointResult(path = path, line = line, status = "not_found",
+                                              content = lineContent(file, lineZeroBased))
 
       enabled?.let { bp.setEnabled(it) }
       condition?.let { bp.setCondition(it.ifBlank { null }) }
@@ -174,7 +189,8 @@ class DebugToolset : McpToolset {
         })
       }
 
-      BreakpointResult(path = path, line = line, status = "updated")
+      BreakpointResult(path = path, line = line, status = "updated",
+                       content = lineContent(file, lineZeroBased))
     }
   }
 
@@ -182,7 +198,8 @@ class DebugToolset : McpToolset {
   @McpDescription("""
     |Lists all line breakpoints currently set in the project.
     |Returns file path (relative to project root), 1-based line number, enabled state,
-    |condition expression, log expression, log-message flag, and suspend policy.
+    |condition expression, log expression, log-message flag, suspend policy,
+    |and the source text of the breakpoint line.
   """)
   suspend fun list_breakpoints(): BreakpointListResult {
     currentCoroutineContext().reportToolActivity(McpServerBundle.message("tool.activity.listing.breakpoints"))
@@ -201,6 +218,7 @@ class DebugToolset : McpToolset {
           } else {
             absolutePath
           }
+          val vf = VirtualFileManager.getInstance().findFileByUrl(bp.fileUrl)
           BreakpointInfo(
             path = relativePath,
             line = bp.line + 1,
@@ -209,6 +227,7 @@ class DebugToolset : McpToolset {
             logExpression = bp.logExpressionObject?.expression?.takeIf { it.isNotBlank() },
             logMessage = bp.isLogMessage,
             suspendPolicy = bp.suspendPolicy.name,
+            content = vf?.let { lineContent(it, bp.line) },
           )
         }
 
@@ -316,6 +335,16 @@ class DebugToolset : McpToolset {
     }
   }
 
+  // ----- helpers -----
+
+  private fun lineContent(file: VirtualFile, lineZeroBased: Int): String? {
+    val doc = FileDocumentManager.getInstance().getDocument(file) ?: return null
+    if (lineZeroBased < 0 || lineZeroBased >= doc.lineCount) return null
+    val start = doc.getLineStartOffset(lineZeroBased)
+    val end = doc.getLineEndOffset(lineZeroBased)
+    return doc.getText(TextRange(start, end)).trim()
+  }
+
   // ----- data classes -----
 
   @Serializable
@@ -324,6 +353,8 @@ class DebugToolset : McpToolset {
     val line: Int,
     /** "created" | "already_exists" | "removed" | "not_found" | "updated" */
     val status: String,
+    /** Source text of the breakpoint line. */
+    val content: String? = null,
   )
 
   @Serializable
@@ -333,9 +364,11 @@ class DebugToolset : McpToolset {
     val enabled: Boolean,
     val condition: String? = null,
     val logExpression: String? = null,
-    val logMessage: Boolean = false,
+    val logMessage: Boolean,
     /** "ALL" | "THREAD" | "NONE" */
-    val suspendPolicy: String = "ALL",
+    val suspendPolicy: String,
+    /** Source text of the breakpoint line. */
+    val content: String? = null,
   )
 
   @Serializable
