@@ -3,8 +3,11 @@ package com.intellij.agent.workbench.sessions
 
 import com.intellij.agent.workbench.sessions.core.AgentSessionProvider
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionSource
+import com.intellij.agent.workbench.sessions.model.AgentSessionThreadPreview
+import com.intellij.agent.workbench.sessions.state.InMemorySessionsTreeUiState
 import com.intellij.testFramework.junit5.TestApplication
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
@@ -14,7 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger
 @TestApplication
 class AgentSessionsServiceRefreshIntegrationTest {
   @Test
-  fun refreshShowsCachedOpenProjectThreadsBeforeProviderLoadCompletes() = runBlocking {
+  fun refreshShowsCachedOpenProjectThreadsBeforeProviderLoadCompletes() = runBlocking(Dispatchers.Default) {
     val started = CompletableDeferred<Unit>()
     val release = CompletableDeferred<Unit>()
     val treeUiState = InMemorySessionsTreeUiState()
@@ -72,7 +75,65 @@ class AgentSessionsServiceRefreshIntegrationTest {
   }
 
   @Test
-  fun refreshRestoresPersistedVisibleThreadCountForKnownPath() = runBlocking {
+  fun refreshKeepsProjectLoadingUntilAllProvidersFinish() = runBlocking(Dispatchers.Default) {
+    val codexStarted = CompletableDeferred<Unit>()
+    val claudeStarted = CompletableDeferred<Unit>()
+    val releaseClaude = CompletableDeferred<Unit>()
+
+    withService(
+      sessionSourcesProvider = {
+        listOf(
+          ScriptedSessionSource(
+            provider = AgentSessionProvider.CODEX,
+            listFromOpenProject = { path, _ ->
+              if (path != PROJECT_PATH) {
+                emptyList()
+              }
+              else {
+                codexStarted.complete(Unit)
+                listOf(thread(id = "codex-1", updatedAt = 200, provider = AgentSessionProvider.CODEX))
+              }
+            },
+          ),
+          ScriptedSessionSource(
+            provider = AgentSessionProvider.CLAUDE,
+            listFromOpenProject = { path, _ ->
+              if (path != PROJECT_PATH) {
+                emptyList()
+              }
+              else {
+                claudeStarted.complete(Unit)
+                releaseClaude.await()
+                listOf(thread(id = "claude-1", updatedAt = 100, provider = AgentSessionProvider.CLAUDE))
+              }
+            },
+          ),
+        )
+      },
+      projectEntriesProvider = {
+        listOf(openProjectEntry(PROJECT_PATH, "Project A"))
+      },
+    ) { service ->
+      service.refresh()
+      codexStarted.await()
+      claudeStarted.await()
+
+      waitForCondition {
+        val project = service.state.value.projects.firstOrNull { it.path == PROJECT_PATH } ?: return@waitForCondition false
+        project.isLoading && project.threads.map { it.id } == listOf("codex-1")
+      }
+
+      releaseClaude.complete(Unit)
+
+      waitForCondition {
+        val project = service.state.value.projects.firstOrNull { it.path == PROJECT_PATH } ?: return@waitForCondition false
+        !project.isLoading && project.threads.map { it.id } == listOf("codex-1", "claude-1")
+      }
+    }
+  }
+
+  @Test
+  fun refreshIgnoresPersistedVisibleThreadCountForKnownPath() = runBlocking(Dispatchers.Default) {
     val treeUiState = InMemorySessionsTreeUiState()
     treeUiState.incrementVisibleThreadCount(PROJECT_PATH, delta = 6)
 
@@ -94,13 +155,13 @@ class AgentSessionsServiceRefreshIntegrationTest {
         service.state.value.projects.any { it.path == PROJECT_PATH }
       }
 
-      assertThat(service.state.value.visibleThreadCounts[PROJECT_PATH])
-        .isEqualTo(DEFAULT_VISIBLE_THREAD_COUNT + 6)
+      assertThat(service.state.value.visibleThreadCounts)
+        .doesNotContainKey(PROJECT_PATH)
     }
   }
 
   @Test
-  fun lifecycleCatalogSyncLoadsOnlyNewlyOpenedProjects() = runBlocking {
+  fun lifecycleCatalogSyncLoadsOnlyNewlyOpenedProjects() = runBlocking(Dispatchers.Default) {
     val secondProjectPath = "/work/project-b"
     var entries = listOf(openProjectEntry(PROJECT_PATH, "Project A"))
     val openLoadCounts = LinkedHashMap<String, AtomicInteger>()
@@ -147,7 +208,7 @@ class AgentSessionsServiceRefreshIntegrationTest {
   }
 
   @Test
-  fun lifecycleCatalogSyncMarksClosedProjectWithoutReloading() = runBlocking {
+  fun lifecycleCatalogSyncMarksClosedProjectWithoutReloading() = runBlocking(Dispatchers.Default) {
     var entries = listOf(openProjectEntry(PROJECT_PATH, "Project A"))
     val openLoadCount = AtomicInteger(0)
 
@@ -185,7 +246,7 @@ class AgentSessionsServiceRefreshIntegrationTest {
   }
 
   @Test
-  fun refreshMergesMixedProviderThreadsAndMarksUnknownCount() = runBlocking {
+  fun refreshMergesMixedProviderThreadsAndMarksUnknownCount() = runBlocking(Dispatchers.Default) {
     withService(
       sessionSourcesProvider = {
         listOf(
@@ -224,7 +285,7 @@ class AgentSessionsServiceRefreshIntegrationTest {
   }
 
   @Test
-  fun refreshShowsProviderWarningWhenOneProviderFails() = runBlocking {
+  fun refreshShowsProviderWarningWhenOneProviderFails() = runBlocking(Dispatchers.Default) {
     withService(
       sessionSourcesProvider = {
         listOf(
@@ -261,7 +322,7 @@ class AgentSessionsServiceRefreshIntegrationTest {
   }
 
   @Test
-  fun refreshShowsBlockingErrorWhenAllProvidersFail() = runBlocking {
+  fun refreshShowsBlockingErrorWhenAllProvidersFail() = runBlocking(Dispatchers.Default) {
     withService(
       sessionSourcesProvider = {
         listOf(
@@ -293,7 +354,7 @@ class AgentSessionsServiceRefreshIntegrationTest {
   }
 
   @Test
-  fun refreshDoesNotMarkUnknownCountWhenOnlyUnknownProviderFails() = runBlocking {
+  fun refreshDoesNotMarkUnknownCountWhenOnlyUnknownProviderFails() = runBlocking(Dispatchers.Default) {
     withService(
       sessionSourcesProvider = {
         listOf(
@@ -329,7 +390,7 @@ class AgentSessionsServiceRefreshIntegrationTest {
   }
 
   @Test
-  fun refreshUsesLatestSessionSourcesFromProvider() = runBlocking {
+  fun refreshUsesLatestSessionSourcesFromProvider() = runBlocking(Dispatchers.Default) {
     var sessionSources = listOf(
       ScriptedSessionSource(
         provider = AgentSessionProvider.CODEX,
@@ -372,7 +433,7 @@ class AgentSessionsServiceRefreshIntegrationTest {
   }
 
   @Test
-  fun providerUpdateRefreshesOnlyMatchingProviderThreads() = runBlocking {
+  fun providerUpdateRefreshesOnlyMatchingProviderThreads() = runBlocking(Dispatchers.Default) {
     val codexUpdates = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     var codexUpdatedAt = 100L
 
@@ -440,7 +501,7 @@ class AgentSessionsServiceRefreshIntegrationTest {
   }
 
   @Test
-  fun providerUpdateObservedAfterSourceAppearsAfterRefresh() = runBlocking {
+  fun providerUpdateObservedAfterSourceAppearsAfterRefresh() = runBlocking(Dispatchers.Default) {
     val codexUpdates = MutableSharedFlow<Unit>(replay = 1, extraBufferCapacity = 1)
     var codexUpdatedAt = 100L
     var sessionSources: List<AgentSessionSource> = emptyList()

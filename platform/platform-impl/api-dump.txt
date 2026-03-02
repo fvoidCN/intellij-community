@@ -191,7 +191,6 @@ c:com.intellij.ide.RecentProjectListActionProvider
 - bs:getActions$default(com.intellij.ide.RecentProjectListActionProvider,Z,Z,Z,I,java.lang.Object):java.util.List
 - recentProjectsInDocSupported():Z
 c:com.intellij.ide.RecentProjectsManagerBase
-- f:addRecentPath(java.nio.file.Path,com.intellij.ide.RecentProjectMetaInfo):V
 - f:getDisplayName(java.nio.file.Path):java.lang.String
 - f:getProjectIcon(java.nio.file.Path,Z):javax.swing.Icon
 - f:getProjectIcon(java.nio.file.Path,Z,I,java.lang.String):javax.swing.Icon
@@ -233,13 +232,6 @@ c:com.intellij.ide.browsers.StartBrowserSettings
 - setStartJavaScriptDebugger(Z):V
 - setUrl(java.lang.String):V
 - writeExternal(org.jdom.Element):V
-c:com.intellij.ide.browsers.actions.OpenInBrowserBaseGroupAction$OpenInBrowserFloatingToolbarProvider
-- com.intellij.openapi.editor.toolbar.floating.AbstractFloatingToolbarProvider
-- <init>():V
-- isApplicable(com.intellij.openapi.actionSystem.DataContext):Z
-com.intellij.ide.browsers.actions.OpenInBrowserBaseGroupAction$OpenInBrowserFloatingToolbarSuppressor
-- sf:EP_NAME:com.intellij.openapi.extensions.ExtensionPointName
-- a:isSuppressed(com.intellij.openapi.editor.toolbar.floating.FloatingToolbarProvider,com.intellij.openapi.actionSystem.DataContext):Z
 com.intellij.ide.dnd.TransferableWrapper
 - com.intellij.ide.dnd.FileFlavorProvider
 - a:getPsiElements():com.intellij.psi.PsiElement[]
@@ -834,9 +826,6 @@ com.intellij.openapi.editor.impl.softwrap.mapping.SoftWrapApplianceManager$Visib
 com.intellij.openapi.editor.markup.LineMarkerRendererEx
 - com.intellij.openapi.editor.markup.LineMarkerRenderer
 - a:getPosition():com.intellij.openapi.editor.markup.LineMarkerRendererEx$Position
-f:com.intellij.openapi.editor.toolbar.floating.EditorFloatingToolbar
-- com.intellij.openapi.Disposable
-- dispose():V
 com.intellij.openapi.editor.toolbar.floating.FloatingToolbarComponent
 - a:getAutoHideable():Z
 - a:getBackgroundAlpha():F
@@ -861,7 +850,10 @@ com.intellij.openapi.editor.toolbar.floating.FloatingToolbarProvider
 - getRetentionTime():I
 - getShowingTime():I
 - isApplicable(com.intellij.openapi.actionSystem.DataContext):Z
+- isApplicableAsync(com.intellij.openapi.actionSystem.DataContext,kotlin.coroutines.Continuation):java.lang.Object
 - register(com.intellij.openapi.actionSystem.DataContext,com.intellij.openapi.editor.toolbar.floating.FloatingToolbarComponent,com.intellij.openapi.Disposable):V
+f:com.intellij.openapi.editor.toolbar.floating.FloatingToolbarProvider$DefaultImpls
+- s:isApplicableAsync(com.intellij.openapi.editor.toolbar.floating.FloatingToolbarProvider,com.intellij.openapi.actionSystem.DataContext,kotlin.coroutines.Continuation):java.lang.Object
 com.intellij.openapi.fileChooser.ex.FileDrop$Target
 - a:dropFiles(java.util.List):V
 - a:getDescriptor():com.intellij.openapi.fileChooser.FileChooserDescriptor

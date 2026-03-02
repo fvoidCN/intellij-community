@@ -2,6 +2,7 @@
 package com.intellij.agent.workbench.chat
 
 import com.intellij.agent.workbench.common.AgentThreadActivity
+import com.intellij.agent.workbench.sessions.core.AgentSessionProvider
 import com.intellij.openapi.diagnostic.debug
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.vfs.VirtualFileSystem
@@ -30,11 +31,23 @@ internal class AgentChatVirtualFile internal constructor(
   var threadIdentity: String = ""
     private set
 
+  var provider: AgentSessionProvider? = null
+    private set
+
+  var sessionId: String = ""
+    private set
+
+  var isPendingThread: Boolean = false
+    private set
+
   var subAgentId: String? = null
     private set
 
   var shellCommand: List<String> = emptyList()
     private set
+
+  @Volatile
+  private var startupShellCommandOverride: List<String>? = null
 
   var threadId: String = ""
     private set
@@ -43,6 +56,24 @@ internal class AgentChatVirtualFile internal constructor(
     private set
 
   var threadActivity: AgentThreadActivity = AgentThreadActivity.READY
+    private set
+
+  var pendingCreatedAtMs: Long? = null
+    private set
+
+  var pendingFirstInputAtMs: Long? = null
+    private set
+
+  var pendingLaunchMode: String? = null
+    private set
+
+  var initialComposedMessage: String? = null
+    private set
+
+  var initialMessageToken: String? = null
+    private set
+
+  var initialMessageSent: Boolean = false
     private set
 
   @TestOnly
@@ -121,6 +152,74 @@ internal class AgentChatVirtualFile internal constructor(
     this.threadId = threadId
   }
 
+  @Synchronized
+  fun setStartupShellCommandOverride(shellCommand: List<String>) {
+    startupShellCommandOverride = shellCommand
+  }
+
+  @Synchronized
+  fun consumeStartupShellCommand(): List<String> {
+    val startupCommand = startupShellCommandOverride
+    startupShellCommandOverride = null
+    return startupCommand ?: shellCommand
+  }
+
+  fun updatePendingMetadata(
+    pendingCreatedAtMs: Long?,
+    pendingFirstInputAtMs: Long?,
+    pendingLaunchMode: String?,
+  ): Boolean {
+    if (
+      this.pendingCreatedAtMs == pendingCreatedAtMs &&
+      this.pendingFirstInputAtMs == pendingFirstInputAtMs &&
+      this.pendingLaunchMode == pendingLaunchMode
+    ) {
+      return false
+    }
+    this.pendingCreatedAtMs = pendingCreatedAtMs
+    this.pendingFirstInputAtMs = pendingFirstInputAtMs
+    this.pendingLaunchMode = pendingLaunchMode
+    return true
+  }
+
+  fun updateInitialMessageMetadata(
+    initialComposedMessage: String?,
+    initialMessageToken: String?,
+    initialMessageSent: Boolean,
+  ): Boolean {
+    val normalizedMessage = initialComposedMessage?.takeIf { it.isNotBlank() }
+    if (
+      this.initialComposedMessage == normalizedMessage &&
+      this.initialMessageToken == initialMessageToken &&
+      this.initialMessageSent == initialMessageSent
+    ) {
+      return false
+    }
+    this.initialComposedMessage = normalizedMessage
+    this.initialMessageToken = initialMessageToken
+    this.initialMessageSent = initialMessageSent
+    return true
+  }
+
+  fun markInitialMessageSent(): Boolean {
+    if (initialComposedMessage.isNullOrBlank() || initialMessageSent) {
+      return false
+    }
+    initialMessageSent = true
+    return true
+  }
+
+  fun markPendingFirstInputAtMsIfAbsent(timestampMs: Long): Boolean {
+    if (!isPendingThread) {
+      return false
+    }
+    if (pendingFirstInputAtMs != null) {
+      return false
+    }
+    pendingFirstInputAtMs = timestampMs
+    return true
+  }
+
   fun rebindPendingThread(
     threadIdentity: String,
     shellCommand: List<String>,
@@ -131,6 +230,7 @@ internal class AgentChatVirtualFile internal constructor(
     var changed = false
     if (this.threadIdentity != threadIdentity) {
       this.threadIdentity = threadIdentity
+      updateThreadCoordinates()
       changed = true
     }
     if (this.shellCommand != shellCommand || this.threadId != threadId) {
@@ -141,6 +241,12 @@ internal class AgentChatVirtualFile internal constructor(
       changed = true
     }
     if (updateThreadActivity(threadActivity)) {
+      changed = true
+    }
+    if (updatePendingMetadata(pendingCreatedAtMs = null, pendingFirstInputAtMs = null, pendingLaunchMode = null)) {
+      changed = true
+    }
+    if (updateInitialMessageMetadata(initialComposedMessage = null, initialMessageToken = null, initialMessageSent = false)) {
       changed = true
     }
 
@@ -165,6 +271,7 @@ internal class AgentChatVirtualFile internal constructor(
       projectPath = snapshot.identity.projectPath
       threadIdentity = snapshot.identity.threadIdentity
       subAgentId = snapshot.identity.subAgentId
+      updateThreadCoordinates()
     }
     if (snapshot.runtime.threadId.isNotBlank() || snapshot.runtime.shellCommand.isNotEmpty()) {
       updateCommandAndThreadId(shellCommand = snapshot.runtime.shellCommand, threadId = snapshot.runtime.threadId)
@@ -173,6 +280,23 @@ internal class AgentChatVirtualFile internal constructor(
       updateThreadTitle(snapshot.runtime.threadTitle)
     }
     updateThreadActivity(snapshot.runtime.threadActivity)
+    updatePendingMetadata(
+      pendingCreatedAtMs = snapshot.runtime.pendingCreatedAtMs,
+      pendingFirstInputAtMs = snapshot.runtime.pendingFirstInputAtMs,
+      pendingLaunchMode = snapshot.runtime.pendingLaunchMode,
+    )
+    updateInitialMessageMetadata(
+      initialComposedMessage = snapshot.runtime.initialComposedMessage,
+      initialMessageToken = snapshot.runtime.initialMessageToken,
+      initialMessageSent = snapshot.runtime.initialMessageSent,
+    )
+  }
+
+  private fun updateThreadCoordinates() {
+    val coordinates = resolveAgentChatThreadCoordinates(threadIdentity)
+    provider = coordinates?.provider
+    sessionId = coordinates?.sessionId.orEmpty()
+    isPendingThread = coordinates?.isPending ?: false
   }
 
   internal fun toSnapshot(): AgentChatTabSnapshot {
@@ -189,6 +313,12 @@ internal class AgentChatVirtualFile internal constructor(
         threadTitle = threadTitle,
         shellCommand = shellCommand,
         threadActivity = threadActivity,
+        pendingCreatedAtMs = pendingCreatedAtMs,
+        pendingFirstInputAtMs = pendingFirstInputAtMs,
+        pendingLaunchMode = pendingLaunchMode,
+        initialComposedMessage = initialComposedMessage,
+        initialMessageToken = initialMessageToken,
+        initialMessageSent = initialMessageSent,
       ),
     )
   }

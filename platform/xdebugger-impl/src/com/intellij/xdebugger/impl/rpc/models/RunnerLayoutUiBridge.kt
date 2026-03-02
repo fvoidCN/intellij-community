@@ -7,6 +7,7 @@ import com.intellij.execution.ui.layout.LayoutStateDefaults
 import com.intellij.execution.ui.layout.LayoutViewOptions
 import com.intellij.execution.ui.layout.PlaceInGrid
 import com.intellij.execution.ui.layout.impl.RunnerLayoutUiImpl
+import com.intellij.execution.ui.layout.impl.ViewImpl
 import com.intellij.ide.rpc.setupTransfer
 import com.intellij.ide.ui.icons.rpcIdOrNull
 import com.intellij.openapi.Disposable
@@ -22,6 +23,7 @@ import com.intellij.ui.content.Content
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManager
 import com.intellij.ui.content.ContentManagerListener
+import com.intellij.util.ui.UIUtil
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.Flow
@@ -54,6 +56,7 @@ internal class RunnerLayoutUiBridge(
     // Do not pass component to the fake content, as it will break LUX transfer due to adding content into a UI hierarchy
     val content = ContentFactory.getInstance().createContent(JLabel(), displayName, false)
     content.putUserData(RunnerLayoutUiImpl.CONTENT_TYPE, contentId)
+    content.putUserData(ViewImpl.ID, contentId)
     content.icon = icon
     if (toFocus != null) {
       content.preferredFocusableComponent = toFocus
@@ -67,7 +70,13 @@ internal class RunnerLayoutUiBridge(
   }
 
   private fun sendContentCreationEvent(component: JComponent, fakeContent: Content, contentId: @NonNls String, displayName: @Nls String, icon: Icon?) {
-    val tabId = component.setupTransfer(disposable)
+    val edtDisposable = Disposer.newDisposable()
+    Disposer.register(disposable) {
+      UIUtil.invokeLaterIfNeeded {
+        Disposer.dispose(edtDisposable)
+      }
+    }
+    val tabId = component.setupTransfer(edtDisposable)
     val uniqueId = contents.size
     contents[fakeContent] = uniqueId
     contentsByUniqueId[uniqueId] = fakeContent
@@ -92,6 +101,7 @@ internal class RunnerLayoutUiBridge(
       )
     }
     contentManager.addContent(content)
+    contentManager.removeFromSelection(content)
     return content
   }
 

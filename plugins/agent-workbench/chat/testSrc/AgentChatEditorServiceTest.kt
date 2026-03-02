@@ -78,6 +78,54 @@ class AgentChatEditorServiceTest {
   }
 
   @Test
+  fun testNewTabStartupCommandOverrideDoesNotPersistInitialMessageMetadata(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:thread-startup-1",
+      shellCommand = codexCommand,
+      startupShellCommandOverride = listOf("codex", "--", "-draft prompt\nsecond line"),
+      threadId = "thread-startup-1",
+      threadTitle = "Startup prompt thread",
+      subAgentId = null,
+      initialComposedMessage = "-draft prompt\nsecond line",
+      initialMessageToken = "startup-token-1",
+    )
+
+    val file = openedChatFiles().single()
+    assertThat(file.shellCommand).containsExactlyElementsOf(codexCommand)
+    assertThat(file.initialComposedMessage).isNull()
+    assertThat(file.initialMessageToken).isNull()
+    assertThat(file.initialMessageSent).isFalse()
+  }
+
+  @Test
+  fun testExistingTabIgnoresStartupCommandOverrideAndKeepsInitialMessageMetadata(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:thread-existing-startup",
+      shellCommand = codexCommand,
+      threadId = "thread-existing-startup",
+      threadTitle = "Existing thread",
+      subAgentId = null,
+    )
+
+    openChatInModal(
+      threadIdentity = "CODEX:thread-existing-startup",
+      shellCommand = codexCommand,
+      startupShellCommandOverride = listOf("codex", "--", "Should be ignored for open tab"),
+      threadId = "thread-existing-startup",
+      threadTitle = "Existing thread",
+      subAgentId = null,
+      initialComposedMessage = "Send through open-tab flow",
+      initialMessageToken = "startup-token-2",
+    )
+
+    val file = openedChatFiles().single()
+    assertThat(file.shellCommand).containsExactlyElementsOf(codexCommand)
+    assertThat(file.initialComposedMessage).isEqualTo("Send through open-tab flow")
+    assertThat(file.initialMessageToken).isEqualTo("startup-token-2")
+    assertThat(file.initialMessageSent).isFalse()
+  }
+
+  @Test
   fun testReuseEditorUpdatesTitleForThread(): Unit = timeoutRunBlocking {
     openChatInModal(
       threadIdentity = "CODEX:thread-1",
@@ -200,6 +248,38 @@ class AgentChatEditorServiceTest {
   }
 
   @Test
+  fun testUpdateOpenChatTabPresentationDoesNotOverrideSubAgentTitle(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:thread-1",
+      shellCommand = codexCommand,
+      threadId = "thread-1",
+      threadTitle = "Parent thread",
+      subAgentId = null,
+    )
+    openChatInModal(
+      threadIdentity = "CODEX:thread-1",
+      shellCommand = listOf("codex", "resume", "sub-1"),
+      threadId = "sub-1",
+      threadTitle = "Sub-agent label",
+      subAgentId = "sub-1",
+    )
+
+    val updatedTabs = runInUi {
+      updateOpenAgentChatTabPresentation(
+        titleByPathAndThreadIdentity = mapOf(
+          (projectPath to "CODEX:thread-1") to "Renamed parent",
+        ),
+        activityByPathAndThreadIdentity = emptyMap(),
+      )
+    }
+    assertThat(updatedTabs).isEqualTo(1)
+
+    val files = openedChatFiles()
+    assertThat(files.first { it.subAgentId == null }.threadTitle).isEqualTo("Renamed parent")
+    assertThat(files.first { it.subAgentId == "sub-1" }.threadTitle).isEqualTo("Sub-agent label")
+  }
+
+  @Test
   fun testRebindOpenPendingChatTabToConcreteThread(): Unit = timeoutRunBlocking {
     openChatInModal(
       threadIdentity = "CODEX:new-1",
@@ -210,20 +290,27 @@ class AgentChatEditorServiceTest {
     )
 
     val file = openedChatFiles().single()
-    val reboundTabs = rebindOpenAgentChatPendingTabs(
-      targetsByProjectPath = mapOf(
+    val rebindReport = rebindOpenPendingCodexTabs(
+      requestsByProjectPath = mapOf(
         projectPath to listOf(
-          AgentChatPendingTabRebindTarget(
-            threadIdentity = "CODEX:thread-3",
-            threadId = "thread-3",
-            shellCommand = listOf("codex", "resume", "thread-3"),
-            threadTitle = "Recovered thread",
-            threadActivity = AgentThreadActivity.UNREAD,
+          AgentChatPendingCodexTabRebindRequest(
+            pendingTabKey = file.tabKey,
+            pendingThreadIdentity = file.threadIdentity,
+            target = AgentChatPendingTabRebindTarget(
+              threadIdentity = "CODEX:thread-3",
+              threadId = "thread-3",
+              shellCommand = listOf("codex", "resume", "thread-3"),
+              threadTitle = "Recovered thread",
+              threadActivity = AgentThreadActivity.UNREAD,
+            ),
           )
         )
       )
     )
-    assertThat(reboundTabs).isEqualTo(1)
+    assertThat(rebindReport.requestedBindings).isEqualTo(1)
+    assertThat(rebindReport.reboundBindings).isEqualTo(1)
+    assertThat(rebindReport.outcomesByPath[projectPath].orEmpty().single().status)
+      .isEqualTo(AgentChatPendingCodexTabRebindStatus.REBOUND)
 
     assertThat(file.threadIdentity).isEqualTo("CODEX:thread-3")
     assertThat(file.threadId).isEqualTo("thread-3")
@@ -239,6 +326,193 @@ class AgentChatEditorServiceTest {
       subAgentId = null,
     )
     assertThat(openedChatFiles()).hasSize(1)
+  }
+
+  @Test
+  fun testCollectOpenPendingCodexTabsByPathIncludesPendingMetadata(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:new-1",
+      shellCommand = listOf("codex"),
+      threadId = "",
+      threadTitle = "Pending thread",
+      subAgentId = null,
+      pendingCreatedAtMs = 1_000L,
+      pendingFirstInputAtMs = 1_250L,
+      pendingLaunchMode = "yolo",
+    )
+
+    val pendingFile = openedChatFiles().single()
+    val pendingTabsByPath = collectOpenPendingCodexTabsByPath()
+    val pendingSnapshot = pendingTabsByPath[projectPath].orEmpty().single()
+    assertThat(pendingSnapshot.projectPath).isEqualTo(projectPath)
+    assertThat(pendingSnapshot.pendingTabKey).isEqualTo(pendingFile.tabKey)
+    assertThat(pendingSnapshot.pendingThreadIdentity).isEqualTo("CODEX:new-1")
+    assertThat(pendingSnapshot.pendingCreatedAtMs).isEqualTo(1_000L)
+    assertThat(pendingSnapshot.pendingFirstInputAtMs).isEqualTo(1_250L)
+    assertThat(pendingSnapshot.pendingLaunchMode).isEqualTo("yolo")
+  }
+
+  @Test
+  fun testCollectOpenConcreteAgentChatThreadIdentitiesByPathSkipsPendingTabs(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:new-1",
+      shellCommand = listOf("codex"),
+      threadId = "",
+      threadTitle = "Pending thread",
+      subAgentId = null,
+    )
+    openChatInModal(
+      threadIdentity = "CODEX:thread-42",
+      shellCommand = listOf("codex", "resume", "thread-42"),
+      threadId = "thread-42",
+      threadTitle = "Concrete thread",
+      subAgentId = null,
+    )
+
+    val concreteByPath = collectOpenConcreteAgentChatThreadIdentitiesByPath()
+    assertThat(concreteByPath[projectPath]).containsExactly("CODEX:thread-42")
+  }
+
+  @Test
+  fun testRebindOpenPendingCodexTabsTargetsOnlyRequestedPendingIdentity(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:new-1",
+      shellCommand = listOf("codex"),
+      threadId = "",
+      threadTitle = "Pending one",
+      subAgentId = null,
+    )
+    openChatInModal(
+      threadIdentity = "CODEX:new-2",
+      shellCommand = listOf("codex"),
+      threadId = "",
+      threadTitle = "Pending two",
+      subAgentId = null,
+    )
+
+    val pendingTab = openedChatFiles().first { it.threadIdentity == "CODEX:new-2" }
+    val rebindReport = rebindOpenPendingCodexTabs(
+      requestsByProjectPath = mapOf(
+        projectPath to listOf(
+          AgentChatPendingCodexTabRebindRequest(
+            pendingTabKey = pendingTab.tabKey,
+            pendingThreadIdentity = "CODEX:new-2",
+            target = AgentChatPendingTabRebindTarget(
+              threadIdentity = "CODEX:thread-2",
+              threadId = "thread-2",
+              shellCommand = listOf("codex", "resume", "thread-2"),
+              threadTitle = "Recovered two",
+              threadActivity = AgentThreadActivity.UNREAD,
+            ),
+          )
+        )
+      )
+    )
+    assertThat(rebindReport.reboundBindings).isEqualTo(1)
+    assertThat(rebindReport.outcomesByPath[projectPath].orEmpty().single().status)
+      .isEqualTo(AgentChatPendingCodexTabRebindStatus.REBOUND)
+
+    val filesByIdentity = openedChatFiles().associateBy { it.threadIdentity }
+    assertThat(filesByIdentity).containsKey("CODEX:new-1")
+    assertThat(filesByIdentity).containsKey("CODEX:thread-2")
+    assertThat(filesByIdentity["CODEX:thread-2"]?.threadActivity).isEqualTo(AgentThreadActivity.UNREAD)
+  }
+
+  @Test
+  fun testRebindOpenPendingCodexTabsFailsWhenConcreteIdentityIsAlreadyOpen(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:new-1",
+      shellCommand = listOf("codex"),
+      threadId = "",
+      threadTitle = "Pending one",
+      subAgentId = null,
+    )
+    openChatInModal(
+      threadIdentity = "CODEX:thread-2",
+      shellCommand = listOf("codex", "resume", "thread-2"),
+      threadId = "thread-2",
+      threadTitle = "Already open",
+      subAgentId = null,
+    )
+
+    val pendingTab = openedChatFiles().first { it.threadIdentity == "CODEX:new-1" }
+    val rebindReport = rebindOpenPendingCodexTabs(
+      requestsByProjectPath = mapOf(
+        projectPath to listOf(
+          AgentChatPendingCodexTabRebindRequest(
+            pendingTabKey = pendingTab.tabKey,
+            pendingThreadIdentity = "CODEX:new-1",
+            target = AgentChatPendingTabRebindTarget(
+              threadIdentity = "CODEX:thread-2",
+              threadId = "thread-2",
+              shellCommand = listOf("codex", "resume", "thread-2"),
+              threadTitle = "Should not replace",
+              threadActivity = AgentThreadActivity.READY,
+            ),
+          )
+        )
+      )
+    )
+    assertThat(rebindReport.reboundBindings).isEqualTo(0)
+    assertThat(rebindReport.outcomesByPath[projectPath].orEmpty().single().status)
+      .isEqualTo(AgentChatPendingCodexTabRebindStatus.TARGET_ALREADY_OPEN)
+    assertThat(openedChatFiles().map { it.threadIdentity }).contains("CODEX:new-1", "CODEX:thread-2")
+  }
+
+  @Test
+  fun testRebindOpenPendingCodexTabsReportsMissingPendingTabKey(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:new-1",
+      shellCommand = listOf("codex"),
+      threadId = "",
+      threadTitle = "Pending one",
+      subAgentId = null,
+    )
+
+    val rebindReport = rebindOpenPendingCodexTabs(
+      requestsByProjectPath = mapOf(
+        projectPath to listOf(
+          AgentChatPendingCodexTabRebindRequest(
+            pendingTabKey = "missing-tab-key",
+            pendingThreadIdentity = "CODEX:new-1",
+            target = AgentChatPendingTabRebindTarget(
+              threadIdentity = "CODEX:thread-2",
+              threadId = "thread-2",
+              shellCommand = listOf("codex", "resume", "thread-2"),
+              threadTitle = "Recovered",
+              threadActivity = AgentThreadActivity.READY,
+            ),
+          )
+        )
+      )
+    )
+
+    assertThat(rebindReport.reboundBindings).isEqualTo(0)
+    assertThat(rebindReport.outcomesByPath[projectPath].orEmpty().single().status)
+      .isEqualTo(AgentChatPendingCodexTabRebindStatus.PENDING_TAB_NOT_OPEN)
+  }
+
+  @Test
+  fun testCollectOpenPendingProjectPathsIncludesOnlyCodexPendingTabs(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CLAUDE:new-1",
+      shellCommand = claudeCommand,
+      threadId = "",
+      threadTitle = "Claude pending",
+      subAgentId = null,
+    )
+
+    assertThat(collectOpenPendingAgentChatProjectPaths()).isEmpty()
+
+    openChatInModal(
+      threadIdentity = "CODEX:new-1",
+      shellCommand = codexCommand,
+      threadId = "",
+      threadTitle = "Codex pending",
+      subAgentId = null,
+    )
+
+    assertThat(collectOpenPendingAgentChatProjectPaths()).containsExactly(projectPath)
   }
 
   @Test
@@ -309,6 +583,50 @@ class AgentChatEditorServiceTest {
   }
 
   @Test
+  fun testArchiveCleanupForSubAgentClosesOnlyMatchingSubAgentTabAndMetadata(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:thread-1",
+      shellCommand = codexCommand,
+      threadId = "thread-1",
+      threadTitle = "Main thread",
+      subAgentId = null,
+    )
+    openChatInModal(
+      threadIdentity = "CODEX:thread-1",
+      shellCommand = listOf("codex", "resume", "sub-alpha"),
+      threadId = "sub-alpha",
+      threadTitle = "Alpha",
+      subAgentId = "sub-alpha",
+    )
+    openChatInModal(
+      threadIdentity = "CODEX:thread-1",
+      shellCommand = listOf("codex", "resume", "sub-beta"),
+      threadId = "sub-beta",
+      threadTitle = "Beta",
+      subAgentId = "sub-beta",
+    )
+
+    val tabsService = service<AgentChatTabsService>()
+    val beforeCleanup = openedChatFiles()
+    val alphaTabKey = beforeCleanup.first { it.subAgentId == "sub-alpha" }.tabKey
+    val betaTabKey = beforeCleanup.first { it.subAgentId == "sub-beta" }.tabKey
+    val baseTabKey = beforeCleanup.first { it.subAgentId == null }.tabKey
+
+    closeAndForgetAgentChatsForThread(
+      projectPath = projectPath,
+      threadIdentity = "CODEX:thread-1",
+      subAgentId = "sub-alpha",
+    )
+
+    val remaining = openedChatFiles()
+    assertThat(remaining).hasSize(2)
+    assertThat(remaining.map { it.subAgentId }).containsExactlyInAnyOrder(null, "sub-beta")
+    assertThat(tabsService.load(alphaTabKey)).isNull()
+    assertThat(tabsService.load(baseTabKey)).isNotNull
+    assertThat(tabsService.load(betaTabKey)).isNotNull
+  }
+
+  @Test
   fun testValidationFailureDeletesMetadata(): Unit = timeoutRunBlocking {
     val snapshot = AgentChatTabSnapshot.create(
       projectHash = project.locationHash,
@@ -367,18 +685,30 @@ class AgentChatEditorServiceTest {
   private suspend fun openChatInModal(
     threadIdentity: String,
     shellCommand: List<String>,
+    startupShellCommandOverride: List<String>? = null,
     threadId: String,
     threadTitle: String,
     subAgentId: String?,
+    pendingCreatedAtMs: Long? = null,
+    pendingFirstInputAtMs: Long? = null,
+    pendingLaunchMode: String? = null,
+    initialComposedMessage: String? = null,
+    initialMessageToken: String? = null,
   ) {
     openChat(
       project = project,
       projectPath = projectPath,
       threadIdentity = threadIdentity,
       shellCommand = shellCommand,
+      startupShellCommandOverride = startupShellCommandOverride,
       threadId = threadId,
       threadTitle = threadTitle,
       subAgentId = subAgentId,
+      pendingCreatedAtMs = pendingCreatedAtMs,
+      pendingFirstInputAtMs = pendingFirstInputAtMs,
+      pendingLaunchMode = pendingLaunchMode,
+      initialComposedMessage = initialComposedMessage,
+      initialMessageToken = initialMessageToken,
     )
     waitForCondition {
       openedChatFiles().any { file ->

@@ -1,6 +1,6 @@
 ---
 name: Agent Threads Testing
-description: Coverage ownership matrix for Agent Workbench specs, including Sessions, Chat, Dedicated Frame, and Codex rollout backends.
+description: Coverage ownership matrix for Swing-based Agent Threads, shared contracts, chat lifecycle, and Codex backends.
 targets:
   - ../sessions/testSrc/*.kt
   - ../chat/testSrc/*.kt
@@ -10,15 +10,18 @@ targets:
 # Agent Threads Testing
 
 Status: Draft
-Date: 2026-02-23
+Date: 2026-02-28
 
 ## Summary
-Define required coverage ownership for Agent Workbench specs. This file does not redefine runtime behavior; it maps each contract area to mandatory test suites.
+Define required coverage ownership for Agent Workbench specs after the hard Swing cutover.
+
+This file does not redefine runtime behavior; it maps each contract area to required test suites.
 
 ## Goals
 - Keep each contract area owned by explicit tests.
 - Avoid overlap-heavy coverage where failures are hard to triage.
 - Keep mock-vs-real backend expectations explicit for Codex app-server tests.
+- Keep Swing tree interaction/state coverage explicit and separate from backend/service coverage.
 
 ## Non-goals
 - Defining runtime behavior (owned by feature specs).
@@ -46,31 +49,52 @@ Define required coverage ownership for Agent Workbench specs. This file does not
   [@test] ../sessions/testSrc/AgentSessionsServiceOnDemandIntegrationTest.kt
   [@test] ../sessions/testSrc/AgentSessionsServiceConcurrencyIntegrationTest.kt
 
-- Sessions tree rendering coverage must include warning/error precedence, empty state exclusivity, and More-row exact/unknown behavior.
-  [@test] ../sessions/testSrc/AgentSessionsToolWindowTest.kt
+- Swing tree rendering coverage must include warning/error precedence, empty-state exclusivity, and `More` row exact/unknown behavior.
+  [@test] ../sessions/testSrc/AgentSessionsSwingTreeRenderingTest.kt
 
-- Persisted tree-state coverage must include collapsed state, visible-count persistence, preview-provider persistence, and legacy provider fallback.
+- Swing tree interaction coverage must include single-click select behavior, activation-open policy, double-click open precedence on openable parent rows, path resolution for `More` rows, and context-menu selection retarget rules.
+  [@test] ../sessions/testSrc/AgentSessionsSwingTreeInteractionTest.kt
+
+- Persisted tree-state coverage must include collapsed-state restoration and expansion parent mapping for selected worktree paths.
+  [@test] ../sessions/testSrc/AgentSessionsSwingTreeStatePersistenceTest.kt
+
+- Persisted UI-state coverage must include visible-count persistence, preview-provider persistence, and legacy provider fallback.
   [@test] ../sessions/testSrc/AgentSessionsTreeUiStateServiceTest.kt
 
-- New-thread action coverage must include row action wiring, provider popup entries, dedup, and pending-to-concrete Codex rebinding.
-  [@test] ../sessions/testSrc/AgentSessionsToolWindowTest.kt
+- New-thread action coverage must include quick-provider eligibility, loading-row exposure, Standard/YOLO popup modeling, dedup, and pending-to-concrete Codex rebinding.
+  [@test] ../sessions/testSrc/AgentSessionsSwingNewSessionActionsTest.kt
   [@test] ../sessions/testSrc/AgentSessionsLoadingCoordinatorTest.kt
   [@test] ../chat/testSrc/AgentChatEditorServiceTest.kt
+
+- Refresh-loading coverage must include per-refreshed-path loading indicators and loading completion semantics (loading is not cleared on first partial provider success).
+  [@test] ../sessions/testSrc/AgentSessionsServiceRefreshIntegrationTest.kt
+  [@test] ../sessions/testSrc/AgentSessionsSwingTreeCellRendererTest.kt
+
+- Tool-window factory coverage must include Swing factory registration and title/gear action registration.
+  [@test] ../sessions/testSrc/AgentSessionsToolWindowFactorySwingTest.kt
+  [@test] ../sessions/testSrc/AgentSessionsGearActionsTest.kt
+
+- Tree-popup action coverage must include platform copy group registration (`CopyReferencePopupGroup`) for project/worktree context menus.
+  [@test] ../sessions/testSrc/AgentSessionsGearActionsTest.kt
 
 - Dedicated-frame coverage must include gear toggle setting wiring, routing behavior in both modes, and dedicated-project filtering.
   [@test] ../sessions/testSrc/AgentSessionsGearActionsTest.kt
   [@test] ../sessions/testSrc/AgentSessionsOpenModeRoutingTest.kt
-  [@test] ../sessions/testSrc/AgentSessionsToolWindowTest.kt
+
+- Claude quota hint coverage must include visibility/acknowledgement gating and toggle action registration.
+  [@test] ../sessions/testSrc/AgentSessionsSwingQuotaHintTest.kt
+  [@test] ../sessions/testSrc/AgentSessionsClaudeQuotaWidgetActionRegistrationTest.kt
 
 - Chat-editor lifecycle coverage must include protocol v2 restore, state round-trip, lazy initialization, tab title refresh, icon mapping fallback, and archive-triggered close+forget.
   [@test] ../chat/testSrc/AgentChatEditorServiceTest.kt
   [@test] ../chat/testSrc/AgentChatFileEditorProviderTest.kt
   [@test] ../chat/testSrc/AgentChatTabSelectionServiceTest.kt
 
-- Codex rollout coverage must include parser/title/activity behavior, watcher behavior (path-scoped + overflow/full-rescan), backend selection defaults/override, and paging no-progress guard behavior.
+- Codex backend coverage must include rollout parser/title/activity behavior, watcher behavior (path-scoped + overflow/full-rescan), app-server sub-agent hierarchy/orphan handling, backend selection defaults/override, and paging no-progress guard behavior.
   [@test] ../codex/sessions/testSrc/CodexRolloutSessionBackendTest.kt
   [@test] ../codex/sessions/testSrc/CodexRolloutSessionBackendFileWatchIntegrationTest.kt
   [@test] ../codex/sessions/testSrc/CodexRolloutSessionsWatcherTest.kt
+  [@test] ../codex/sessions/testSrc/CodexAppServerSessionBackendTest.kt
   [@test] ../codex/sessions/testSrc/CodexSessionBackendSelectorTest.kt
   [@test] ../codex/sessions/testSrc/CodexSessionsPagingLogicTest.kt
 
@@ -86,12 +110,16 @@ Define required coverage ownership for Agent Workbench specs. This file does not
 ## Requirement Ownership Matrix
 - Core contracts: `AgentSessionCliTest`, `AgentSessionsEditorTabActionsTest`, `AgentSessionsServiceArchiveIntegrationTest`, `AgentSessionsServiceOnDemandIntegrationTest`
 - Sessions aggregation/loading: `AgentSessionLoadAggregationTest`, `AgentSessionsServiceRefreshIntegrationTest`, `AgentSessionsServiceOnDemandIntegrationTest`, `AgentSessionsServiceConcurrencyIntegrationTest`
-- Sessions tree rendering: `AgentSessionsToolWindowTest`
+- Swing tree rendering: `AgentSessionsSwingTreeRenderingTest`
+- Swing tree interaction: `AgentSessionsSwingTreeInteractionTest`
+- Swing tree state persistence: `AgentSessionsSwingTreeStatePersistenceTest`
 - Tree UI persisted state: `AgentSessionsTreeUiStateServiceTest`
-- New-thread flow: `AgentSessionsToolWindowTest`, `AgentSessionsLoadingCoordinatorTest`, `AgentChatEditorServiceTest`
-- Dedicated frame: `AgentSessionsGearActionsTest`, `AgentSessionsOpenModeRoutingTest`, `AgentSessionsToolWindowTest`
+- New-thread flow: `AgentSessionsSwingNewSessionActionsTest`, `AgentSessionsLoadingCoordinatorTest`, `AgentChatEditorServiceTest`
+- Tool-window factory wiring: `AgentSessionsToolWindowFactorySwingTest`, `AgentSessionsGearActionsTest`
+- Dedicated frame: `AgentSessionsGearActionsTest`, `AgentSessionsOpenModeRoutingTest`
+- Quota hint gating: `AgentSessionsSwingQuotaHintTest`, `AgentSessionsClaudeQuotaWidgetActionRegistrationTest`
 - Chat tab lifecycle: `AgentChatEditorServiceTest`, `AgentChatFileEditorProviderTest`, `AgentChatTabSelectionServiceTest`
-- Codex rollout backend: `CodexRolloutSessionBackendTest`, `CodexRolloutSessionBackendFileWatchIntegrationTest`, `CodexRolloutSessionsWatcherTest`, `CodexSessionBackendSelectorTest`, `CodexSessionsPagingLogicTest`
+- Codex rollout/backend selection: `CodexRolloutSessionBackendTest`, `CodexRolloutSessionBackendFileWatchIntegrationTest`, `CodexRolloutSessionsWatcherTest`, `CodexAppServerSessionBackendTest`, `CodexSessionBackendSelectorTest`, `CodexSessionsPagingLogicTest`
 - Codex app-server contract: `CodexAppServerClientTest`
 
 ## Contract Suite
@@ -112,7 +140,8 @@ Define required coverage ownership for Agent Workbench specs. This file does not
 ## Running Locally
 - `./tests.cmd '-Dintellij.build.test.patterns=com.intellij.agent.workbench.sessions.AgentSessionLoadAggregationTest'`
 - `./tests.cmd '-Dintellij.build.test.patterns=com.intellij.agent.workbench.sessions.AgentSessionsService*IntegrationTest'`
-- `./tests.cmd '-Dintellij.build.test.patterns=com.intellij.agent.workbench.sessions.AgentSessionsToolWindowTest'`
+- `./tests.cmd '-Dintellij.build.test.patterns=com.intellij.agent.workbench.sessions.AgentSessionsSwing*Test'`
+- `./tests.cmd '-Dintellij.build.test.patterns=com.intellij.agent.workbench.sessions.AgentSessionsToolWindowFactorySwingTest'`
 - `./tests.cmd '-Dintellij.build.test.patterns=com.intellij.agent.workbench.chat.AgentChat*Test'`
 - `./tests.cmd '-Dintellij.build.test.patterns=com.intellij.agent.workbench.codex.sessions.CodexRollout*Test'`
 - `./tests.cmd '-Dintellij.build.test.patterns=com.intellij.agent.workbench.sessions.CodexAppServerClientTest -Dintellij.build.test.main.module=intellij.agent.workbench.sessions'`

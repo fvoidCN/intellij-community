@@ -15,6 +15,12 @@ internal data class AgentChatTabRuntime(
   @JvmField val threadTitle: String,
   @JvmField val shellCommand: List<String>,
   @JvmField val threadActivity: AgentThreadActivity,
+  @JvmField val pendingCreatedAtMs: Long? = null,
+  @JvmField val pendingFirstInputAtMs: Long? = null,
+  @JvmField val pendingLaunchMode: String? = null,
+  @JvmField val initialComposedMessage: String? = null,
+  @JvmField val initialMessageToken: String? = null,
+  @JvmField val initialMessageSent: Boolean = false,
 )
 
 internal data class AgentChatTabSnapshot(
@@ -32,6 +38,12 @@ internal data class AgentChatTabSnapshot(
       subAgentId: String?,
       shellCommand: List<String>,
       threadActivity: AgentThreadActivity = AgentThreadActivity.READY,
+      pendingCreatedAtMs: Long? = null,
+      pendingFirstInputAtMs: Long? = null,
+      pendingLaunchMode: String? = null,
+      initialComposedMessage: String? = null,
+      initialMessageToken: String? = null,
+      initialMessageSent: Boolean = false,
     ): AgentChatTabSnapshot {
       val identity = AgentChatTabIdentity(
         projectHash = projectHash,
@@ -47,6 +59,12 @@ internal data class AgentChatTabSnapshot(
           threadTitle = threadTitle,
           shellCommand = shellCommand,
           threadActivity = threadActivity,
+          pendingCreatedAtMs = pendingCreatedAtMs,
+          pendingFirstInputAtMs = pendingFirstInputAtMs,
+          pendingLaunchMode = pendingLaunchMode,
+          initialComposedMessage = initialComposedMessage,
+          initialMessageToken = initialMessageToken,
+          initialMessageSent = initialMessageSent,
         ),
       )
     }

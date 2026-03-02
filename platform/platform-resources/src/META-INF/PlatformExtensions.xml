@@ -315,7 +315,6 @@
 
     <cachesInvalidator implementation="com.intellij.openapi.vfs.newvfs.FSRecordsCacheInvalidator" order="after rootCachesInvalidator"/>
     <cachesInvalidator id="rootCachesInvalidator" implementation="com.intellij.ide.actions.RootCachesInvalidator" order="first"/>
-    <logsPreprocessor implementation="com.intellij.ide.logsUploader.DefaultLogsProcessor"/>
 
     <applicationService serviceInterface="com.intellij.util.ui.RestartDialog" open="true"
                         serviceImplementation="com.intellij.util.ui.RestartDialogImpl"/>
@@ -953,7 +952,7 @@
       id="DefaultFloatingToolbarProvider"/>
 
     <editorFloatingToolbarProvider
-      implementation="com.intellij.ide.browsers.actions.OpenInBrowserBaseGroupAction$OpenInBrowserFloatingToolbarProvider"
+      implementation="com.intellij.ide.browsers.actions.OpenInBrowserFloatingToolbarProvider"
       id="OpenInBrowserFloatingToolbarProvider"/>
 
     <bundledKeymap file="$default.xml"/>
@@ -1179,9 +1178,6 @@
                 factoryClass="com.intellij.notification.impl.NotificationsToolWindowFactory"/>
     <projectService serviceInterface="com.intellij.notification.NotificationsLogController"
                     serviceImplementation="com.intellij.notification.impl.NotificationsLogToolWindowController"/>
-
-    <toolWindow id="Meet New UI" anchor="right" secondary="false" icon="AllIcons.Toolwindows.MeetNewUi"
-                factoryClass="com.intellij.ide.ui.experimental.meetNewUi.MeetNewUiToolWindowFactory"/>
 
     <applicationService serviceInterface="com.intellij.ide.TypePresentationService"
                         serviceImplementation="com.intellij.ide.TypePresentationServiceImpl"/>
@@ -1414,7 +1410,7 @@
                         serviceImplementation="com.intellij.net.ssl.CertificateWarningDialogProviderImpl"/>
 
     <!--suppress PluginXmlValidity -->
-    <rawEditorTypedHandler implementationClass="com.intellij.openapi.editor.impl.MyRawTypedHandler"/>
+    <rawEditorTypedHandler implementationClass="com.intellij.openapi.editor.impl.EditorRawTypedHandler"/>
 
     <postStartupActivity implementation="com.intellij.diagnostic.AnalyzePendingSnapshotActivity"/>
 

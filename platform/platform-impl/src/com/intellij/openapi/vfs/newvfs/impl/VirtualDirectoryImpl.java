@@ -10,12 +10,12 @@ import com.intellij.openapi.util.IntRef;
 import com.intellij.openapi.util.Key;
 import com.intellij.openapi.util.SystemInfo;
 import com.intellij.openapi.util.ThrowableComputable;
-import com.intellij.openapi.util.io.FileAttributes;
 import com.intellij.openapi.util.io.FileAttributes.CaseSensitivity;
 import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.openapi.vfs.InvalidVirtualFileAccessException;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.newvfs.ChildInfoImpl;
+import com.intellij.openapi.vfs.newvfs.FileDeletedException;
 import com.intellij.openapi.vfs.newvfs.NewVirtualFile;
 import com.intellij.openapi.vfs.newvfs.NewVirtualFileSystem;
 import com.intellij.openapi.vfs.newvfs.RefreshQueue;
@@ -284,7 +284,7 @@ public class VirtualDirectoryImpl extends VirtualFileSystemEntry {
           //If childId was already deleted, it should be removed from ChildrenIds list first,
           // see PersistentFSImpl.executeDelete() -- but here we are, with childId from findChildInfo(),
           // executed under the directoryLock:
-          throw new IllegalStateException("file(=#" + childId + ") is deleted, but still in .children list");
+          throw new FileDeletedException(childId, "file is deleted, but still in [" + getId() + "].children list");
         }
         newlyLoadedChild = getCachedOrLoadChild(childId, vfsData);
         addChild(newlyLoadedChild);
@@ -429,20 +429,21 @@ public class VirtualDirectoryImpl extends VirtualFileSystemEntry {
     return child;
   }
 
-  @Nullable
-  public static VFileCreateEvent createCreateEvent(@NotNull VirtualFile directory,
-                                                    @NotNull FakeVirtualFile fakeChild,
-                                                    @NotNull String canonicallyCasedName,
-                                                    @NotNull NewVirtualFileSystem fileSystem) {
-    FileAttributes attributes = fileSystem.getAttributes(fakeChild);
+  public static @Nullable VFileCreateEvent createCreateEvent(
+    @NotNull VirtualFile directory,
+    @NotNull FakeVirtualFile fakeChild,
+    @NotNull String canonicallyCasedName,
+    @NotNull NewVirtualFileSystem fileSystem
+  ) {
+    var attributes = fileSystem.getAttributes(fakeChild);
     if (attributes == null) {
       return null;
     }
 
-    boolean isDirectory = attributes.isDirectory();
-    boolean isEmptyDirectory = isDirectory && !fileSystem.hasChildren(fakeChild);
-    String symlinkTarget = attributes.isSymLink() ? fileSystem.resolveSymLink(fakeChild) : null;
-    ChildInfo[] children = isEmptyDirectory ? ChildInfo.EMPTY_ARRAY : null;
+    var isDirectory = attributes.isDirectory();
+    var isEmptyDirectory = isDirectory && !fileSystem.hasChildren(fakeChild);
+    var symlinkTarget = attributes.isSymLink() ? fileSystem.resolveSymLink(fakeChild) : null;
+    var children = isEmptyDirectory ? ChildInfo.EMPTY_ARRAY : null;
     return new VFileCreateEvent(REFRESH_REQUESTOR, directory, canonicallyCasedName, isDirectory, attributes, symlinkTarget, children);
   }
 
@@ -1187,7 +1188,7 @@ public class VirtualDirectoryImpl extends VirtualFileSystemEntry {
     if (PersistentFSRecordAccessor.hasDeletedFlag(childAttributes)) {
       //It is an error to come here with childId which was already deleted -- such childId should be removed from ChildrenIds
       // list first, see PersistentFSImpl.executeDelete()
-      throw new FileDeletedException(childId, "file is deleted, can't be loaded");
+      throw new FileDeletedException(childId, "file is deleted, but still in [" + getId() + "].children list");
     }
 
     int childNameId = vfsPeer.getNameIdByFileId(childId);

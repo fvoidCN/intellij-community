@@ -18,7 +18,7 @@ targets:
 # Agent Chat Editor
 
 Status: Draft
-Date: 2026-02-22
+Date: 2026-02-28
 
 ## Summary
 Define how Agent chat tabs are opened, restored, reused, and rendered in editor tabs. This spec owns tab lifecycle and persistence behavior. Shared command mapping and shared editor-tab popup action semantics are owned by `spec/agent-core-contracts.spec.md`.
@@ -56,7 +56,7 @@ Define how Agent chat tabs are opened, restored, reused, and rendered in editor 
 - Restore metadata must be persisted in app-level cache-file-backed `AgentChatTabsStateService` keyed by `tabKey`.
   [@test] ../chat/testSrc/AgentChatEditorServiceTest.kt
 
-- Persisted tab-state payload must include project hash/path, thread identity/sub-agent, thread id, shell command, title, activity, and updated timestamp.
+- Persisted tab-state payload must include project hash/path, thread identity/sub-agent, thread id, shell command, title, activity, pending Codex metadata (`pendingCreatedAtMs`, `pendingFirstInputAtMs`, `pendingLaunchMode`), and updated timestamp.
   [@test] ../chat/testSrc/AgentChatEditorServiceTest.kt
 
 - Chat restore must restore all previously open Agent chat tabs, not only the selected one.
@@ -73,6 +73,12 @@ Define how Agent chat tabs are opened, restored, reused, and rendered in editor 
   - terminal session starts only on first explicit tab selection/focus.
   [@test] ../chat/testSrc/AgentChatTabSelectionServiceTest.kt
 
+- Disposing an initialized chat editor must always release terminal tab resources:
+  - manager-backed tab content must close through `TerminalToolWindowTabsManager.closeTab`,
+  - detached tab content (no content manager) must still be released.
+  [@test] ../chat/testSrc/AgentChatFileEditorLifecycleTest.kt
+  [@test] ../chat/testSrc/AgentChatTerminalTabCloseTest.kt
+
 - Editor tab title must come from thread title with fallback `Agent Chat`, via `EditorTabTitleProvider` (no virtual-file-name mutation dependency), and must be middle-truncated to 50 characters for presentation while tooltip keeps full title.
   [@test] ../chat/testSrc/AgentChatEditorServiceTest.kt
   [@test] ../chat/testSrc/AgentChatFileEditorProviderTest.kt
@@ -80,7 +86,10 @@ Define how Agent chat tabs are opened, restored, reused, and rendered in editor 
 - Reopening an already-open tab with a newer thread title must update existing tab presentation.
   [@test] ../chat/testSrc/AgentChatEditorServiceTest.kt
 
-- Editor tab icon must be provider-specific using canonical identity and must include activity badge mapping; unknown provider must use default chat icon and unknown activity must default to `READY`.
+- Pending Codex tabs must capture first user-input timestamp once (on first terminal key event) and persist it for later rebind matching.
+  [@test] ../chat/testSrc/AgentChatEditorServiceTest.kt
+
+- Editor tab icon must be provider-specific using canonical identity; `READY` is unbadged, non-`READY` activities use the activity badge mapping, unknown provider uses the default chat icon, and unknown activity defaults to `READY`.
   [@test] ../chat/testSrc/AgentChatFileEditorProviderTest.kt
 
 - Provider icon lookup in chat/editor tab providers must use shared typed icon holder (`AgentWorkbenchCommonIcons`), not inline path-based icon loading.
@@ -102,6 +111,10 @@ Define how Agent chat tabs are opened, restored, reused, and rendered in editor 
 - Shared command mapping and editor-tab popup action contract must follow `spec/agent-core-contracts.spec.md`.
   [@test] ../sessions/testSrc/AgentSessionCliTest.kt
   [@test] ../sessions/testSrc/AgentSessionsEditorTabActionsTest.kt
+
+- Editor tab actions must include `Bind Pending Codex Thread` for pending Codex tabs, invoking targeted rebind for the active pending tab only.
+  [@test] ../sessions/testSrc/AgentSessionsEditorTabActionsTest.kt
+  [@test] ../chat/testSrc/AgentChatEditorServiceTest.kt
 
 ## User Experience
 - Clicking a thread opens its chat tab.
@@ -133,3 +146,4 @@ Define how Agent chat tabs are opened, restored, reused, and rendered in editor 
 - `spec/agent-core-contracts.spec.md`
 - `spec/agent-dedicated-frame.spec.md`
 - `spec/agent-sessions.spec.md`
+- `spec/agent-chat-terminal-api-spike.md`

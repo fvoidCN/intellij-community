@@ -3,6 +3,9 @@ package com.intellij.agent.workbench.sessions.core.providers
 
 import com.intellij.agent.workbench.sessions.core.AgentSessionLaunchMode
 import com.intellij.agent.workbench.sessions.core.AgentSessionProvider
+import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptContextEnvelopeFormatter
+import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptInitialMessageRequest
+import javax.swing.Icon
 
 interface AgentSessionProviderBridge {
   val provider: AgentSessionProvider
@@ -10,7 +13,7 @@ interface AgentSessionProviderBridge {
   val newSessionLabelKey: String
   val yoloSessionLabelKey: String?
     get() = null
-  val iconId: String
+  val icon: Icon
 
   val supportedLaunchModes: Set<AgentSessionLaunchMode>
     get() = setOf(AgentSessionLaunchMode.STANDARD)
@@ -32,11 +35,17 @@ interface AgentSessionProviderBridge {
 
   fun buildNewEntryCommand(): List<String>
 
+  fun buildCommandWithInitialPrompt(baseCommand: List<String>, prompt: String): List<String>? = null
+
   suspend fun createNewSession(path: String, mode: AgentSessionLaunchMode): AgentSessionLaunchSpec
 
   suspend fun archiveThread(path: String, threadId: String): Boolean = false
 
   suspend fun unarchiveThread(path: String, threadId: String): Boolean = false
+
+  fun composeInitialMessage(request: AgentPromptInitialMessageRequest): String {
+    return AgentPromptContextEnvelopeFormatter.composeInitialMessage(request)
+  }
 
   fun isCliMissingError(throwable: Throwable): Boolean = false
 }

@@ -4,11 +4,14 @@ package com.intellij.agent.workbench.sessions
 import com.intellij.agent.workbench.codex.common.CodexAppServerClient
 import com.intellij.agent.workbench.codex.common.CodexAppServerException
 import com.intellij.agent.workbench.codex.common.CodexCliNotFoundException
+import com.intellij.agent.workbench.codex.common.CodexThreadActiveFlag
+import com.intellij.agent.workbench.codex.common.CodexThreadSourceKind
+import com.intellij.agent.workbench.codex.common.CodexThreadStatusKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
-import org.junit.jupiter.api.Assertions.fail
+import org.assertj.core.api.Assertions.fail
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.junit.jupiter.params.ParameterizedTest
@@ -33,7 +36,7 @@ class CodexAppServerClientTest {
 
   @ParameterizedTest(name = "{0}")
   @MethodSource("backends")
-  fun listThreadsUsesCodexAppServerBackends(backend: CodexBackend): Unit = runBlocking(Dispatchers.IO) {
+  fun listThreadsUsesCodexAppServerBackends(backend: CodexBackend): Unit = runBlocking(Dispatchers.Default) {
     val configPath = tempDir.resolve("codex-config.json")
     writeConfig(
       path = configPath,
@@ -47,7 +50,7 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun listThreadsFiltersThreadsByCwdFilter(): Unit = runBlocking(Dispatchers.IO) {
+  fun listThreadsFiltersThreadsByCwdFilter(): Unit = runBlocking(Dispatchers.Default) {
     val projectA = tempDir.resolve("project-alpha")
     val projectB = tempDir.resolve("project-beta")
     Files.createDirectories(projectA)
@@ -93,7 +96,183 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun listThreadsPageSupportsCursorAndLimit(): Unit = runBlocking(Dispatchers.IO) {
+  fun listThreadsIncludesSubAgentSourcesAndParsesSourceStatusMetadata(): Unit = runBlocking(Dispatchers.Default) {
+    val project = tempDir.resolve("project-source-status")
+    Files.createDirectories(project)
+    val normalizedCwd = project.toString().replace('\\', '/').trimEnd('/')
+    val configPath = tempDir.resolve("codex-source-status.json")
+    writeConfig(
+      path = configPath,
+      threads = listOf(
+        ThreadSpec(
+          id = "parent-1",
+          title = "Parent thread",
+          cwd = normalizedCwd,
+          sourceKind = "cli",
+          statusType = "idle",
+          updatedAt = 1_700_000_000_000L,
+          archived = false,
+        ),
+        ThreadSpec(
+          id = "subagent-1",
+          title = "Sub-agent thread",
+          cwd = normalizedCwd,
+          sourceKind = "subAgentThreadSpawn",
+          parentThreadId = "parent-1",
+          agentNickname = "Scout",
+          agentRole = "reviewer",
+          statusType = "active",
+          activeFlags = listOf("waitingOnUserInput"),
+          gitBranch = "feature/subagent",
+          updatedAt = 1_700_000_010_000L,
+          archived = false,
+        ),
+      ),
+    )
+    val backendDir = tempDir.resolve("backend-source-status")
+    Files.createDirectories(backendDir)
+    val client = createMockClient(
+      scope = this,
+      tempDir = backendDir,
+      configPath = configPath,
+    )
+    try {
+      val threads = client.listThreads(archived = false, cwdFilter = normalizedCwd)
+      assertThat(threads.map { it.id }).containsExactly("subagent-1", "parent-1")
+
+      val byId = threads.associateBy { it.id }
+      val parent = byId.getValue("parent-1")
+      assertThat(parent.sourceKind).isEqualTo(CodexThreadSourceKind.CLI)
+      assertThat(parent.statusKind).isEqualTo(CodexThreadStatusKind.IDLE)
+
+      val subAgent = byId.getValue("subagent-1")
+      assertThat(subAgent.sourceKind).isEqualTo(CodexThreadSourceKind.SUB_AGENT_THREAD_SPAWN)
+      assertThat(subAgent.parentThreadId).isEqualTo("parent-1")
+      assertThat(subAgent.agentNickname).isEqualTo("Scout")
+      assertThat(subAgent.agentRole).isEqualTo("reviewer")
+      assertThat(subAgent.statusKind).isEqualTo(CodexThreadStatusKind.ACTIVE)
+      assertThat(subAgent.activeFlags).containsExactly(CodexThreadActiveFlag.WAITING_ON_USER_INPUT)
+      assertThat(subAgent.gitBranch).isEqualTo("feature/subagent")
+    }
+    finally {
+      client.shutdown()
+    }
+  }
+
+  @Test
+  fun listThreadsParsesSourceAndStatusVariantFormats(): Unit = runBlocking(Dispatchers.Default) {
+    val project = tempDir.resolve("project-source-status-variants")
+    Files.createDirectories(project)
+    val normalizedCwd = project.toString().replace('\\', '/').trimEnd('/')
+    val configPath = tempDir.resolve("codex-source-status-variants.json")
+    writeConfig(
+      path = configPath,
+      threads = listOf(
+        ThreadSpec(
+          id = "parent-1",
+          title = "Parent",
+          cwd = normalizedCwd,
+          sourceKind = "cli",
+          statusType = "idle",
+          updatedAt = 1_700_000_000_000L,
+          archived = false,
+        ),
+        ThreadSpec(
+          id = "subagent-lowercase-source",
+          title = "Lowercase subagent source",
+          cwd = normalizedCwd,
+          sourceKind = "subAgentThreadSpawn",
+          sourceSubAgentFieldName = "subagent",
+          parentThreadId = "parent-1",
+          statusType = "active",
+          statusActiveFlagsFieldName = "active_flags",
+          activeFlags = listOf("waiting_on_approval"),
+          updatedAt = 1_700_000_020_000L,
+          archived = false,
+        ),
+        ThreadSpec(
+          id = "subagent-flat",
+          title = "Flat subagent source",
+          cwd = normalizedCwd,
+          sourceKind = "subAgent",
+          sourceAsString = true,
+          statusType = "ACTIVE",
+          activeFlags = listOf("waiting_on_user_input"),
+          updatedAt = 1_700_000_019_000L,
+          archived = false,
+        ),
+        ThreadSpec(
+          id = "subagent-flat-review",
+          title = "Flat review source",
+          cwd = normalizedCwd,
+          sourceKind = "subAgentReview",
+          sourceAsString = true,
+          statusType = "idle",
+          updatedAt = 1_700_000_018_000L,
+          archived = false,
+        ),
+        ThreadSpec(
+          id = "subagent-flat-compact",
+          title = "Flat compact source",
+          cwd = normalizedCwd,
+          sourceKind = "subAgentCompact",
+          sourceAsString = true,
+          statusType = "idle",
+          updatedAt = 1_700_000_017_000L,
+          archived = false,
+        ),
+        ThreadSpec(
+          id = "subagent-flat-other",
+          title = "Flat other source",
+          cwd = normalizedCwd,
+          sourceKind = "subAgentOther",
+          sourceAsString = true,
+          statusType = "idle",
+          updatedAt = 1_700_000_016_000L,
+          archived = false,
+        ),
+        ThreadSpec(
+          id = "status-system-error",
+          title = "System error status",
+          cwd = normalizedCwd,
+          sourceKind = "cli",
+          statusType = "SYSTEM-ERROR",
+          updatedAt = 1_700_000_015_000L,
+          archived = false,
+        ),
+      ),
+    )
+    val backendDir = tempDir.resolve("backend-source-status-variants")
+    Files.createDirectories(backendDir)
+    val client = createMockClient(
+      scope = this,
+      tempDir = backendDir,
+      configPath = configPath,
+    )
+    try {
+      val threads = client.listThreads(archived = false, cwdFilter = normalizedCwd)
+      val byId = threads.associateBy { it.id }
+
+      val lowercaseSource = byId.getValue("subagent-lowercase-source")
+      assertThat(lowercaseSource.sourceKind).isEqualTo(CodexThreadSourceKind.SUB_AGENT_THREAD_SPAWN)
+      assertThat(lowercaseSource.parentThreadId).isEqualTo("parent-1")
+      assertThat(lowercaseSource.activeFlags).containsExactly(CodexThreadActiveFlag.WAITING_ON_APPROVAL)
+
+      assertThat(byId.getValue("subagent-flat").sourceKind).isEqualTo(CodexThreadSourceKind.SUB_AGENT)
+      assertThat(byId.getValue("subagent-flat-review").sourceKind).isEqualTo(CodexThreadSourceKind.SUB_AGENT_REVIEW)
+      assertThat(byId.getValue("subagent-flat-compact").sourceKind).isEqualTo(CodexThreadSourceKind.SUB_AGENT_COMPACT)
+      assertThat(byId.getValue("subagent-flat-other").sourceKind).isEqualTo(CodexThreadSourceKind.SUB_AGENT_OTHER)
+      assertThat(byId.getValue("subagent-flat").statusKind).isEqualTo(CodexThreadStatusKind.ACTIVE)
+      assertThat(byId.getValue("subagent-flat").activeFlags).containsExactly(CodexThreadActiveFlag.WAITING_ON_USER_INPUT)
+      assertThat(byId.getValue("status-system-error").statusKind).isEqualTo(CodexThreadStatusKind.SYSTEM_ERROR)
+    }
+    finally {
+      client.shutdown()
+    }
+  }
+
+  @Test
+  fun listThreadsPageSupportsCursorAndLimit(): Unit = runBlocking(Dispatchers.Default) {
     val workingDir = tempDir.resolve("project-page")
     Files.createDirectories(workingDir)
     val configPath = workingDir.resolve("codex-config.json")
@@ -130,7 +309,42 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun listThreadsParsesPreviewAndTimestampVariants(): Unit = runBlocking(Dispatchers.IO) {
+  fun listThreadsTraversesAllPagesBeyondTenPageBoundary(): Unit = runBlocking(Dispatchers.Default) {
+    val workingDir = tempDir.resolve("project-many-pages")
+    Files.createDirectories(workingDir)
+    val configPath = workingDir.resolve("codex-config.json")
+    val totalThreads = 520
+    val threadSpecs = (1..totalThreads).map { index ->
+      ThreadSpec(
+        id = "thread-$index",
+        title = "Thread $index",
+        cwd = workingDir.toString(),
+        updatedAt = 1_700_000_600_000L - index,
+        archived = false,
+      )
+    }
+    writeConfig(path = configPath, threads = threadSpecs)
+    val backendDir = tempDir.resolve("backend-many-pages")
+    Files.createDirectories(backendDir)
+    val client = createMockClient(
+      scope = this,
+      tempDir = backendDir,
+      configPath = configPath,
+    )
+    try {
+      val cwdFilter = workingDir.toString().replace('\\', '/').trimEnd('/')
+      val threads = client.listThreads(archived = false, cwdFilter = cwdFilter)
+      assertThat(threads).hasSize(totalThreads)
+      assertThat(threads.first().id).isEqualTo("thread-1")
+      assertThat(threads.last().id).isEqualTo("thread-$totalThreads")
+    }
+    finally {
+      client.shutdown()
+    }
+  }
+
+  @Test
+  fun listThreadsParsesPreviewAndTimestampVariants(): Unit = runBlocking(Dispatchers.Default) {
     val workingDir = tempDir.resolve("project-preview")
     Files.createDirectories(workingDir)
     val configPath = workingDir.resolve("codex-config.json")
@@ -181,7 +395,7 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun listThreadsFailsOnServerError(): Unit = runBlocking(Dispatchers.IO) {
+  fun listThreadsFailsOnServerError(): Unit = runBlocking(Dispatchers.Default) {
     val configPath = tempDir.resolve("codex-config.json")
     writeConfig(
       path = configPath,
@@ -220,7 +434,7 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun createThreadStartsNewThreadAndAddsItToList(): Unit = runBlocking(Dispatchers.IO) {
+  fun createThreadStartsNewThreadAndAddsItToList(): Unit = runBlocking(Dispatchers.Default) {
     val workingDir = tempDir.resolve("project-start")
     Files.createDirectories(workingDir)
     val configPath = workingDir.resolve("codex-config.json")
@@ -259,7 +473,7 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun createThreadWithParamsPassesThemThrough(): Unit = runBlocking(Dispatchers.IO) {
+  fun createThreadWithParamsPassesThemThrough(): Unit = runBlocking(Dispatchers.Default) {
     val workingDir = tempDir.resolve("project-start-params")
     Files.createDirectories(workingDir)
     val configPath = workingDir.resolve("codex-config.json")
@@ -287,7 +501,7 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun archiveThreadMovesThreadFromActiveToArchivedList(): Unit = runBlocking(Dispatchers.IO) {
+  fun archiveThreadMovesThreadFromActiveToArchivedList(): Unit = runBlocking(Dispatchers.Default) {
     val workingDir = tempDir.resolve("project-archive")
     Files.createDirectories(workingDir)
     val configPath = workingDir.resolve("codex-config.json")
@@ -334,7 +548,7 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun unarchiveThreadMovesThreadFromArchivedToActiveList(): Unit = runBlocking(Dispatchers.IO) {
+  fun unarchiveThreadMovesThreadFromArchivedToActiveList(): Unit = runBlocking(Dispatchers.Default) {
     val workingDir = tempDir.resolve("project-unarchive")
     Files.createDirectories(workingDir)
     val configPath = workingDir.resolve("codex-config.json")
@@ -381,7 +595,7 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun idleTimeoutStopsLazyStartedProcess(): Unit = runBlocking(Dispatchers.IO) {
+  fun idleTimeoutStopsLazyStartedProcess(): Unit = runBlocking(Dispatchers.Default) {
     val workingDir = tempDir.resolve("project-idle-timeout")
     Files.createDirectories(workingDir)
     val configPath = workingDir.resolve("codex-config.json")
@@ -425,7 +639,7 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun persistThreadSendsTurnStartWithoutInterrupt(): Unit = runBlocking(Dispatchers.IO) {
+  fun persistThreadSendsTurnStartWithoutInterrupt(): Unit = runBlocking(Dispatchers.Default) {
     val configPath = tempDir.resolve("codex-config.json")
     writeConfig(path = configPath, threads = emptyList())
 
@@ -454,7 +668,7 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun createThreadFailsOnServerError(): Unit = runBlocking(Dispatchers.IO) {
+  fun createThreadFailsOnServerError(): Unit = runBlocking(Dispatchers.Default) {
     val configPath = tempDir.resolve("codex-config.json")
     writeConfig(path = configPath, threads = emptyList())
 
@@ -484,7 +698,7 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun listThreadsUsesPathOverrideWhenExecutableProviderMissing(): Unit = runBlocking(Dispatchers.IO) {
+  fun listThreadsUsesPathOverrideWhenExecutableProviderMissing(): Unit = runBlocking(Dispatchers.Default) {
     val workingDir = tempDir.resolve("project-path-override")
     Files.createDirectories(workingDir)
     val configPath = workingDir.resolve("codex-config.json")
@@ -520,7 +734,7 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun listThreadsFailsWithoutFallbackWhenConfiguredExecutableIsInvalid(): Unit = runBlocking(Dispatchers.IO) {
+  fun listThreadsFailsWithoutFallbackWhenConfiguredExecutableIsInvalid(): Unit = runBlocking(Dispatchers.Default) {
     val workingDir = tempDir.resolve("project-invalid-exec")
     Files.createDirectories(workingDir)
     val configPath = workingDir.resolve("codex-config.json")
@@ -551,7 +765,7 @@ class CodexAppServerClientTest {
   }
 
   @Test
-  fun listThreadsReportsDefaultExecutableStartFailuresWithoutCliMissingError(): Unit = runBlocking(Dispatchers.IO) {
+  fun listThreadsReportsDefaultExecutableStartFailuresWithoutCliMissingError(): Unit = runBlocking(Dispatchers.Default) {
     val workingDir = tempDir.resolve("project-invalid-env")
     Files.createDirectories(workingDir)
     val configPath = workingDir.resolve("codex-config.json")
