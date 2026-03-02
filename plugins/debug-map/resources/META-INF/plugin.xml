@@ -1,0 +1,22 @@
+<idea-plugin package="com.intellij.debugmap">
+  <name>Debug Map</name>
+  <id>com.intellij.debugmap</id>
+  <category>Debugger</category>
+  <description><![CDATA[
+    Debug Map — colored breakpoint groups with git-style workflow (checkout / commit / stash / pop).
+    Turns breakpoints into persistent, semantic artifacts that survive across debugging sessions.
+  ]]></description>
+  <vendor>JetBrains</vendor>
+
+  <depends>com.intellij.mcpServer</depends>
+
+  <extensions defaultExtensionNs="com.intellij.mcpServer">
+    <mcpToolset implementation="com.intellij.debugmap.mcp.DebugMapToolset"/>
+  </extensions>
+
+  <projectListeners>
+    <listener class="com.intellij.debugmap.listener.DebugMapBreakpointListener"
+              topic="com.intellij.xdebugger.breakpoints.XBreakpointListener"/>
+  </projectListeners>
+
+</idea-plugin>

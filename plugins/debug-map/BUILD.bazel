@@ -1,0 +1,26 @@
+### auto-generated section `build intellij.debugmap` start
+load("@rules_jvm//:jvm.bzl", "jvm_library", "resourcegroup")
+
+resourcegroup(
+  name = "debugmap_resources",
+  srcs = glob(["resources/**/*"]),
+  strip_prefix = "resources"
+)
+
+jvm_library(
+  name = "debugmap",
+  module_name = "intellij.debugmap",
+  visibility = ["//visibility:public"],
+  srcs = glob(["src/**/*.kt", "src/**/*.java"], allow_empty = True),
+  resources = [":debugmap_resources"],
+  deps = [
+    "@lib//:kotlin-stdlib",
+    "//platform/util:util",
+    "//platform/core-api:core",
+    "//platform/projectModel-api:projectModel",
+    "//platform/xdebugger-api:debugger",
+    "//platform/xdebugger-impl:debugger-impl",
+    "//plugins/mcp-server:mcpserver",
+  ]
+)
+### auto-generated section `build intellij.debugmap` end
