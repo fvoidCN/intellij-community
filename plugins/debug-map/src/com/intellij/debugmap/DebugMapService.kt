@@ -51,11 +51,10 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
   }
 
   /**
-   * Sets activeGroupId directly without touch or syncState.
-   * Used by [BreakpointIdeSyncer] to control listener behaviour during checkout
-   * without causing intermediate UI updates.
+   * Sets activeGroupId directly on the manager without touch or syncState.
+   * Called by [BreakpointIdeSyncer] to drive listener behaviour during checkout phases.
    */
-  internal fun setActiveGroupIdQuiet(groupId: Int?) {
+  internal fun setActiveGroupId(groupId: Int?) {
     groupManager.activeGroupId = groupId
   }
 
@@ -128,21 +127,14 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
   fun getGroups(): List<GroupData> = _groups.value
   fun groupExists(groupId: Int): Boolean = groupManager.groupExists(groupId)
   fun getActiveGroupId(): Int? = groupManager.activeGroupId
-  fun setActiveGroupId(groupId: Int?) {
-    groupManager.activeGroupId = groupId
-    if (groupId != null) groupManager.touchGroup(groupId)
-    syncState()
-  }
 
   /**
    * Deletes a group and its breakpoint definitions.
-   * If the group is currently active, its breakpoints are removed from the IDE first (checkout to null).
+   * The active group cannot be deleted; callers must checkout a different group first.
    * Must be called within a writeAction.
    */
   fun deleteGroup(groupId: Int) {
-    if (groupManager.activeGroupId == groupId) {
-      ideSyncer.checkout(null)
-    }
+    check(groupManager.activeGroupId != groupId) { "Cannot delete the active group; checkout another group first" }
     groupManager.deleteGroup(groupId)
     breakpointDefManager.removeGroup(groupId)
     syncState()

@@ -7,16 +7,7 @@ import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointListener
 import com.intellij.xdebugger.breakpoints.XLineBreakpoint
 
-/**
- * Keeps [DebugMapService] in sync with IDE breakpoint lifecycle events.
- *
- * Registered as a project-level listener via plugin.xml <projectListeners>.
- *
- * Checkout is coordinated via [DebugMapService.setActiveGroupIdQuiet]:
- * - During the remove phase activeGroupId is null  → removes are ignored.
- * - During the add phase activeGroupId is the target → adds are captured and
- *   re-sync the stored def (including the actual typeId) back into the service.
- */
+/** Keeps [DebugMapService] in sync with IDE breakpoint lifecycle events. */
 class DebugMapBreakpointListener(private val project: Project) : XBreakpointListener<XBreakpoint<*>> {
 
   private val service get() = DebugMapService.getInstance(project)
