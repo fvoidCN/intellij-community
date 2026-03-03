@@ -14,10 +14,24 @@ import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.StoragePathMacros
 import com.intellij.openapi.project.Project
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 @Service(Service.Level.PROJECT)
 @State(name = "DebugMap", storages = [Storage(StoragePathMacros.WORKSPACE_FILE)])
-class DebugMapService(project: Project) : PersistentStateComponent<PersistedState> {
+class DebugMapService(val project: Project) : PersistentStateComponent<PersistedState> {
+
+  private val _groups = MutableStateFlow<List<GroupData>>(emptyList())
+  val groups: StateFlow<List<GroupData>> = _groups.asStateFlow()
+
+  private val _activeGroupId = MutableStateFlow<Int?>(null)
+  val activeGroupId: StateFlow<Int?> = _activeGroupId.asStateFlow()
+
+  companion object {
+    fun getInstance(project: Project): DebugMapService =
+      project.getService(DebugMapService::class.java)
+  }
 
   private val groupManager = GroupManager()
   private val breakpointDefManager = BreakpointDefManager()
@@ -28,6 +42,11 @@ class DebugMapService(project: Project) : PersistentStateComponent<PersistedStat
 
   init {
     ensureDefaultGroup()
+  }
+
+  private fun syncState() {
+    _groups.value = groupManager.getGroups()
+    _activeGroupId.value = groupManager.activeGroupId
   }
 
   override fun getState(): PersistedState = PersistedState().also { state ->
@@ -71,19 +90,22 @@ class DebugMapService(project: Project) : PersistentStateComponent<PersistedStat
     }
     breakpointDefManager.restore(breakpointsSnapshot)
     ensureDefaultGroup()
+    syncState()
   }
 
   fun createGroup(annotation: String): Int {
     val id = groupManager.createGroup(annotation)
     breakpointDefManager.initGroup(id)
+    syncState()
     return id
   }
 
-  fun getGroups(): List<GroupData> = groupManager.getGroups()
+  fun getGroups(): List<GroupData> = _groups.value
   fun groupExists(groupId: Int): Boolean = groupManager.groupExists(groupId)
-  fun getActiveGroupId(): Int? = groupManager.activeGroupId
+  fun getActiveGroupId(): Int? = _activeGroupId.value
   fun setActiveGroupId(groupId: Int?) {
     groupManager.activeGroupId = groupId
+    syncState()
   }
 
   /**
@@ -97,16 +119,21 @@ class DebugMapService(project: Project) : PersistentStateComponent<PersistedStat
     }
     groupManager.deleteGroup(groupId)
     breakpointDefManager.removeGroup(groupId)
+    syncState()
   }
 
   fun getGroupBreakpoints(groupId: Int): List<BreakpointDef> =
     breakpointDefManager.getGroupBreakpoints(groupId)
 
-  fun addBreakpointToGroup(groupId: Int, def: BreakpointDef): Unit =
+  fun addBreakpointToGroup(groupId: Int, def: BreakpointDef) {
     breakpointDefManager.addBreakpointToGroup(groupId, def)
+    syncState()
+  }
 
-  fun removeBreakpointFromGroup(groupId: Int, fileUrl: String, line: Int): Unit =
+  fun removeBreakpointFromGroup(groupId: Int, fileUrl: String, line: Int) {
     breakpointDefManager.removeBreakpointFromGroup(groupId, fileUrl, line)
+    syncState()
+  }
 
   fun isGroupBreakpoint(fileUrl: String, line: Int): Boolean =
     breakpointDefManager.isGroupBreakpoint(fileUrl, line)
@@ -115,7 +142,10 @@ class DebugMapService(project: Project) : PersistentStateComponent<PersistedStat
     breakpointDefManager.getBreakpointGroupId(fileUrl, line)
 
   /** Must be called within a writeAction. Switches active group and syncs IDE breakpoints. */
-  fun checkout(targetGroupId: Int?): Unit = ideSyncer.checkout(targetGroupId)
+  fun checkout(targetGroupId: Int?) {
+    ideSyncer.checkout(targetGroupId)
+    syncState()
+  }
 
   /** Ensures there is always at least one group and an active group. */
   private fun ensureDefaultGroup() {
@@ -123,14 +153,11 @@ class DebugMapService(project: Project) : PersistentStateComponent<PersistedStat
       val id = groupManager.createGroup("Default")
       breakpointDefManager.initGroup(id)
       groupManager.activeGroupId = id
+      syncState()
     }
     else if (groupManager.activeGroupId == null) {
       groupManager.activeGroupId = groupManager.getGroups().first().id
+      syncState()
     }
-  }
-
-  companion object {
-    fun getInstance(project: Project): DebugMapService =
-      project.getService(DebugMapService::class.java)
   }
 }

@@ -4,7 +4,11 @@ load("@rules_jvm//:jvm.bzl", "jvm_library", "resourcegroup")
 
 create_kotlinc_options(
   name = "custom_debugmap",
-  x_x_language = []
+  x_x_language = [],
+  opt_in = [
+    "androidx.compose.foundation.ExperimentalFoundationApi",
+  ],
+  plugin_options = ["plugin:androidx.compose.compiler.plugins.kotlin:generateFunctionKeyMetaAnnotations=true"]
 )
 
 resourcegroup(
@@ -31,7 +35,9 @@ jvm_library(
     "//platform/xdebugger-impl:debugger-impl",
     "//libraries/kotlinx/serialization/core",
     "//plugins/mcp-server:mcpserver",
-  ]
+    "//platform/compose",
+  ],
+  plugins = ["@lib//:compose-plugin"]
 )
 
 jvm_library(

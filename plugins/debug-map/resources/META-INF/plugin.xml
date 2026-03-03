@@ -8,12 +8,18 @@
   ]]></description>
   <vendor>JetBrains</vendor>
 
+  <extensions defaultExtensionNs="com.intellij">
+    <toolWindow id="Debug Map"
+                anchor="right"
+                secondary="true"
+                icon="AllIcons.Debugger.MultipleBreakpoints"
+                factoryClass="com.intellij.debugmap.ui.DebugMapToolWindowFactory"/>
+  </extensions>
   <depends>com.intellij.mcpServer</depends>
 
   <resource-bundle>messages.DebugMapBundle</resource-bundle>
 
   <extensions defaultExtensionNs="com.intellij.mcpServer">
-    <mcpToolset implementation="com.intellij.debugmap.mcp.DebugMapToolset"/>
     <mcpToolset implementation="com.intellij.debugmap.mcp.DebugToolset"/>
     <mcpToolset implementation="com.intellij.debugmap.mcp.BookmarkToolset"/>
   </extensions>
