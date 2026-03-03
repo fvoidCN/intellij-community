@@ -4,6 +4,7 @@ package com.intellij.debugmap.model
 class PersistedBreakpoint {
   var fileUrl: String = ""
   var line: Int = 0
+  var typeId: String = "java-line"
   var condition: String? = null
   var logExpression: String? = null
   var annotation: String? = null
@@ -14,6 +15,7 @@ class PersistedGroup {
   var id: Int = 0
   var annotation: String = ""
   var createdAt: Long = 0L
+  var lastActivatedAt: Long = 0L
   var breakpoints: MutableList<PersistedBreakpoint> = mutableListOf()
 }
 

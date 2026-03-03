@@ -2,12 +2,12 @@ package com.intellij.debugmap
 
 import com.intellij.debugmap.manager.BreakpointDefManager
 import com.intellij.debugmap.manager.GroupManager
-import com.intellij.debugmap.sync.BreakpointIdeSyncer
 import com.intellij.debugmap.model.BreakpointDef
 import com.intellij.debugmap.model.GroupData
 import com.intellij.debugmap.model.PersistedBreakpoint
 import com.intellij.debugmap.model.PersistedGroup
 import com.intellij.debugmap.model.PersistedState
+import com.intellij.debugmap.sync.BreakpointIdeSyncer
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
@@ -37,16 +37,26 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
   private val breakpointDefManager = BreakpointDefManager()
   private val ideSyncer = BreakpointIdeSyncer(project)
 
-  @Volatile
-  var isSyncing: Boolean = false
-
   init {
-    ensureDefaultGroup()
+    // Only initializes in-memory state; does NOT call syncState() so the StateFlow
+    // keeps its emptyList() default until loadState() (or noStateLoaded) runs below.
+    ensureDefaultGroupQuiet()
   }
 
   private fun syncState() {
-    _groups.value = groupManager.getGroups()
+    _groups.value = groupManager.getGroups().map { group ->
+      group.copy(breakpoints = breakpointDefManager.getGroupBreakpoints(group.id))
+    }
     _activeGroupId.value = groupManager.activeGroupId
+  }
+
+  /**
+   * Sets activeGroupId directly without touch or syncState.
+   * Used by [BreakpointIdeSyncer] to control listener behaviour during checkout
+   * without causing intermediate UI updates.
+   */
+  internal fun setActiveGroupIdQuiet(groupId: Int?) {
+    groupManager.activeGroupId = groupId
   }
 
   override fun getState(): PersistedState = PersistedState().also { state ->
@@ -57,10 +67,12 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
         pg.id = group.id
         pg.annotation = group.annotation
         pg.createdAt = group.createdAt
+        pg.lastActivatedAt = group.lastActivatedAt
         pg.breakpoints = breakpointDefManager.getGroupBreakpoints(group.id).map { def ->
           PersistedBreakpoint().also { pb ->
             pb.fileUrl = def.fileUrl
             pb.line = def.line
+            pb.typeId = def.typeId
             pb.condition = def.condition
             pb.logExpression = def.logExpression
             pb.annotation = def.annotation
@@ -70,9 +82,19 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
     }.toMutableList()
   }
 
+  /** Called by IntelliJ when there is no previously saved state (new project). */
+  override fun noStateLoaded() {
+    syncState()
+  }
+
   override fun loadState(state: PersistedState) {
     val groupsSnapshot = state.groups.associate { pg ->
-      pg.id to GroupData(id = pg.id, annotation = pg.annotation, createdAt = pg.createdAt)
+      pg.id to GroupData(
+        id = pg.id,
+        annotation = pg.annotation,
+        createdAt = pg.createdAt,
+        lastActivatedAt = pg.lastActivatedAt,
+      )
     }
     val activeGroupId = if (state.activeGroupId == -1) null else state.activeGroupId
     groupManager.restore(groupsSnapshot, state.nextGroupId, activeGroupId)
@@ -82,6 +104,7 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
         BreakpointDef(
           fileUrl = pb.fileUrl,
           line = pb.line,
+          typeId = pb.typeId,
           condition = pb.condition,
           logExpression = pb.logExpression,
           annotation = pb.annotation,
@@ -89,12 +112,14 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
       }
     }
     breakpointDefManager.restore(breakpointsSnapshot)
-    ensureDefaultGroup()
+    ensureDefaultGroupQuiet()
     syncState()
   }
 
+  val nextGroupId: Int get() = groupManager.nextGroupId
+
   fun createGroup(annotation: String): Int {
-    val id = groupManager.createGroup(annotation)
+    val id = groupManager.createGroup(annotation.ifBlank { "Group ${groupManager.nextGroupId}" })
     breakpointDefManager.initGroup(id)
     syncState()
     return id
@@ -102,9 +127,10 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
 
   fun getGroups(): List<GroupData> = _groups.value
   fun groupExists(groupId: Int): Boolean = groupManager.groupExists(groupId)
-  fun getActiveGroupId(): Int? = _activeGroupId.value
+  fun getActiveGroupId(): Int? = groupManager.activeGroupId
   fun setActiveGroupId(groupId: Int?) {
     groupManager.activeGroupId = groupId
+    if (groupId != null) groupManager.touchGroup(groupId)
     syncState()
   }
 
@@ -144,20 +170,22 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
   /** Must be called within a writeAction. Switches active group and syncs IDE breakpoints. */
   fun checkout(targetGroupId: Int?) {
     ideSyncer.checkout(targetGroupId)
+    if (targetGroupId != null) groupManager.touchGroup(targetGroupId)
     syncState()
   }
 
-  /** Ensures there is always at least one group and an active group. */
-  private fun ensureDefaultGroup() {
+  /**
+   * Ensures there is always at least one group and an active group.
+   * Does NOT call syncState() — callers are responsible for that.
+   */
+  private fun ensureDefaultGroupQuiet() {
     if (groupManager.getGroups().isEmpty()) {
       val id = groupManager.createGroup("Default")
       breakpointDefManager.initGroup(id)
       groupManager.activeGroupId = id
-      syncState()
     }
     else if (groupManager.activeGroupId == null) {
       groupManager.activeGroupId = groupManager.getGroups().first().id
-      syncState()
     }
   }
 }

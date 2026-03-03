@@ -15,7 +15,12 @@ class GroupManager {
     return id
   }
 
-  fun getGroups(): List<GroupData> = groups.values.sortedBy { it.id }
+  fun touchGroup(id: Int) {
+    val group = groups[id] ?: return
+    groups[id] = group.copy(lastActivatedAt = System.currentTimeMillis())
+  }
+
+  fun getGroups(): List<GroupData> = groups.values.sortedByDescending { it.lastActivatedAt }
 
   fun groupExists(groupId: Int): Boolean = groups.containsKey(groupId)
 

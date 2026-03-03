@@ -7,6 +7,7 @@ package com.intellij.debugmap.model
 data class BreakpointDef(
   val fileUrl: String,
   val line: Int,
+  val typeId: String = "java-line",
   val condition: String? = null,
   val logExpression: String? = null,
   val annotation: String? = null,

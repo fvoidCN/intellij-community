@@ -9,8 +9,17 @@ import com.intellij.openapi.project.Project
  * All public methods must be called on the EDT inside a write action, as
  * XBreakpointManager mutations are UI-thread operations.
  *
- * [DebugMapService.isSyncing] is set to true for the duration of each operation so that
- * [com.intellij.debugmap.listener.DebugMapBreakpointListener] ignores the programmatic events.
+ * Instead of suppressing listener events with a flag, this syncer controls
+ * [DebugMapService.setActiveGroupIdQuiet] to drive listener behaviour:
+ *
+ * - During the remove phase: activeGroupId is set to null, so
+ *   [com.intellij.debugmap.listener.DebugMapBreakpointListener.breakpointRemoved]
+ *   ignores the events and stored data is left intact.
+ *
+ * - During the add phase: activeGroupId is set to [targetGroupId], so
+ *   [com.intellij.debugmap.listener.DebugMapBreakpointListener.breakpointAdded]
+ *   fires normally and re-syncs each def (including the actual typeId chosen by
+ *   IntelliJ for the current code position) back into the service.
  */
 class BreakpointIdeSyncer(private val project: Project) {
 
@@ -19,27 +28,27 @@ class BreakpointIdeSyncer(private val project: Project) {
 
   /**
    * Switches the active group to [targetGroupId] (or null = no active group):
-   * 1. Removes the current active group's breakpoints from the IDE.
-   * 2. Sets the active group and XBreakpointManager's defaultGroup.
-   * 3. Adds [targetGroupId]'s breakpoints to the IDE.
+   * 1. Nulls out activeGroupId so removes are ignored by the listener.
+   * 2. Removes the current active group's breakpoints from the IDE.
+   * 3. Sets activeGroupId to [targetGroupId] so adds are captured by the listener.
+   * 4. Adds [targetGroupId]'s breakpoints to the IDE — the listener re-syncs
+   *    each def with the actual typeId back into the service automatically.
    */
   fun checkout(targetGroupId: Int?) {
-    service.isSyncing = true
-    try {
-      val currentGroupId = service.getActiveGroupId()
-      if (currentGroupId != null) {
-        ideManager.removeBreakpointDefs(service.getGroupBreakpoints(currentGroupId))
-      }
-      // Set defaultGroup BEFORE addBreakpointDefs so that addLineBreakpoint puts
-      // the restored breakpoints into the correct named group immediately.
-      service.setActiveGroupId(targetGroupId)
-      ideManager.setDefaultGroup(targetGroupId)
-      if (targetGroupId != null) {
-        ideManager.addBreakpointDefs(service.getGroupBreakpoints(targetGroupId))
-      }
+    val currentGroupId = service.getActiveGroupId()
+
+    // Null out first so breakpointRemoved events are ignored.
+    service.setActiveGroupIdQuiet(null)
+    ideManager.setDefaultGroup(null)
+    if (currentGroupId != null) {
+      ideManager.removeBreakpointDefs(service.getGroupBreakpoints(currentGroupId))
     }
-    finally {
-      service.isSyncing = false
+
+    // Set target before adding so breakpointAdded events sync to the right group.
+    service.setActiveGroupIdQuiet(targetGroupId)
+    ideManager.setDefaultGroup(targetGroupId)
+    if (targetGroupId != null) {
+      ideManager.addBreakpointDefs(service.getGroupBreakpoints(targetGroupId))
     }
   }
 }
