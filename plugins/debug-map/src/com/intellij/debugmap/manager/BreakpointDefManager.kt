@@ -17,7 +17,7 @@ class BreakpointDefManager {
    * Adds or replaces a breakpoint definition in [groupId].
    * Uniqueness key is (fileUrl, line) within the group.
    */
-  fun addBreakpointToGroup(groupId: Int, def: BreakpointDef) {
+  fun upsertBreakpointInGroup(groupId: Int, def: BreakpointDef) {
     val list = groupBreakpoints.getOrPut(groupId) { mutableListOf() }
     val idx = list.indexOfFirst { it.fileUrl == def.fileUrl && it.line == def.line }
     if (idx >= 0) list[idx] = def.copy(annotation = list[idx].annotation) else list.add(def)

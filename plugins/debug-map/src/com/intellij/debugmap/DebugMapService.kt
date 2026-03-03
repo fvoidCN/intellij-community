@@ -143,8 +143,8 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
   fun getGroupBreakpoints(groupId: Int): List<BreakpointDef> =
     breakpointDefManager.getGroupBreakpoints(groupId)
 
-  fun addBreakpointToGroup(groupId: Int, def: BreakpointDef) {
-    breakpointDefManager.addBreakpointToGroup(groupId, def)
+  fun upsertBreakpointInGroup(groupId: Int, def: BreakpointDef) {
+    breakpointDefManager.upsertBreakpointInGroup(groupId, def)
     syncState()
   }
 
