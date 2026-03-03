@@ -22,133 +22,133 @@ import kotlinx.serialization.Serializable
 
 class DebugMapToolset : McpToolset {
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Group management
-    // ──────────────────────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // Group management
+  // ──────────────────────────────────────────────────────────────────────────
 
-    @McpTool(name = "debugmap_list_groups")
-    @McpDescription("""
+  @McpTool(name = "debugmap_list_groups")
+  @McpDescription("""
         |Lists all breakpoint groups and the current active group.
         |Each group stores a named set of breakpoints. Only the active group's breakpoints
         |are visible in the IDE; all others are hidden until you checkout that group.
     """)
-    suspend fun list_groups(): GroupListResult {
-        currentCoroutineContext().reportToolActivity("Listing debug map groups")
-        val project = currentCoroutineContext().project
-        val service = DebugMapService.getInstance(project)
+  suspend fun list_groups(): GroupListResult {
+    currentCoroutineContext().reportToolActivity("Listing debug map groups")
+    val project = currentCoroutineContext().project
+    val service = DebugMapService.getInstance(project)
 
-        val groups = service.getGroups().map { g ->
-            GroupInfo(
-                id = g.id,
-                annotation = g.annotation,
-                breakpointCount = service.getGroupBreakpoints(g.id).size,
-                active = g.id == service.getActiveGroupId(),
-            )
-        }
-        return GroupListResult(groups = groups, activeGroupId = service.getActiveGroupId())
+    val groups = service.getGroups().map { g ->
+      GroupInfo(
+        id = g.id,
+        annotation = g.annotation,
+        breakpointCount = service.getGroupBreakpoints(g.id).size,
+        active = g.id == service.getActiveGroupId(),
+      )
     }
+    return GroupListResult(groups = groups, activeGroupId = service.getActiveGroupId())
+  }
 
-    @McpTool(name = "debugmap_create_group")
-    @McpDescription("""
+  @McpTool(name = "debugmap_create_group")
+  @McpDescription("""
         |Creates a new breakpoint group and immediately switches to it.
         |The previous group's breakpoints are hidden; new breakpoints will belong to this group.
     """)
-    suspend fun create_group(
-        @McpDescription("A short name or label for this group, e.g. 'auth-flow' or 'perf-hotspots'")
-        annotation: String,
-    ): GroupResult {
-        currentCoroutineContext().reportToolActivity("Creating debug map group '$annotation'")
-        val project = currentCoroutineContext().project
-        val service = DebugMapService.getInstance(project)
+  suspend fun create_group(
+    @McpDescription("A short name or label for this group, e.g. 'auth-flow' or 'perf-hotspots'")
+    annotation: String,
+  ): GroupResult {
+    currentCoroutineContext().reportToolActivity("Creating debug map group '$annotation'")
+    val project = currentCoroutineContext().project
+    val service = DebugMapService.getInstance(project)
 
-        val previousId = service.getActiveGroupId()
-        val id = service.createGroup(annotation)
-        writeAction { service.checkout(id) }
-        return GroupResult(id = id, annotation = annotation, previousGroupId = previousId, status = "created")
-    }
+    val previousId = service.getActiveGroupId()
+    val id = service.createGroup(annotation)
+    writeAction { service.checkout(id) }
+    return GroupResult(id = id, annotation = annotation, previousGroupId = previousId, status = "created")
+  }
 
-    @McpTool(name = "debugmap_delete_group")
-    @McpDescription("""
+  @McpTool(name = "debugmap_delete_group")
+  @McpDescription("""
         |Deletes a breakpoint group and all its breakpoint definitions.
         |If the group is currently active, its breakpoints are removed from the IDE first.
         |Use debugmap_checkout to switch to another group afterwards.
     """)
-    suspend fun delete_group(
-        @McpDescription("ID of the group to delete")
-        groupId: Int,
-    ): GroupResult {
-        currentCoroutineContext().reportToolActivity("Deleting debug map group $groupId")
-        val project = currentCoroutineContext().project
-        val service = DebugMapService.getInstance(project)
+  suspend fun delete_group(
+    @McpDescription("ID of the group to delete")
+    groupId: Int,
+  ): GroupResult {
+    currentCoroutineContext().reportToolActivity("Deleting debug map group $groupId")
+    val project = currentCoroutineContext().project
+    val service = DebugMapService.getInstance(project)
 
-        if (!service.groupExists(groupId)) {
-            mcpFail("Group $groupId does not exist. Use debugmap_list_groups to see available groups.")
-        }
-        val annotation = service.getGroups().first { it.id == groupId }.annotation
-        writeAction { service.deleteGroup(groupId) }
-
-        return GroupResult(id = groupId, annotation = annotation, status = "deleted")
+    if (!service.groupExists(groupId)) {
+      mcpFail("Group $groupId does not exist. Use debugmap_list_groups to see available groups.")
     }
+    val annotation = service.getGroups().first { it.id == groupId }.annotation
+    writeAction { service.deleteGroup(groupId) }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Checkout
-    // ──────────────────────────────────────────────────────────────────────────
+    return GroupResult(id = groupId, annotation = annotation, status = "deleted")
+  }
 
-    @McpTool(name = "debugmap_checkout")
-    @McpDescription("""
+  // ──────────────────────────────────────────────────────────────────────────
+  // Checkout
+  // ──────────────────────────────────────────────────────────────────────────
+
+  @McpTool(name = "debugmap_checkout")
+  @McpDescription("""
         |Switches the active breakpoint group.
         |The current active group's breakpoints are removed from the IDE.
         |The target group's breakpoints are added to the IDE.
         |New breakpoints set by the user will automatically belong to the active group.
     """)
-    suspend fun checkout(
-        @McpDescription("ID of the group to activate")
-        groupId: Int,
-    ): CheckoutResult {
-        currentCoroutineContext().reportToolActivity("Checking out debug map group $groupId")
-        val project = currentCoroutineContext().project
-        val service = DebugMapService.getInstance(project)
+  suspend fun checkout(
+    @McpDescription("ID of the group to activate")
+    groupId: Int,
+  ): CheckoutResult {
+    currentCoroutineContext().reportToolActivity("Checking out debug map group $groupId")
+    val project = currentCoroutineContext().project
+    val service = DebugMapService.getInstance(project)
 
-        if (!service.groupExists(groupId)) {
-            mcpFail("Group $groupId does not exist. Use debugmap_list_groups to see available groups.")
-        }
-
-        val previousId = service.getActiveGroupId()
-        writeAction { service.checkout(groupId) }
-
-        return CheckoutResult(previousGroupId = previousId, activeGroupId = groupId, status = "ok")
+    if (!service.groupExists(groupId)) {
+      mcpFail("Group $groupId does not exist. Use debugmap_list_groups to see available groups.")
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Result types
-    // ──────────────────────────────────────────────────────────────────────────
+    val previousId = service.getActiveGroupId()
+    writeAction { service.checkout(groupId) }
 
-    @Serializable
-    data class GroupInfo(
-        val id: Int,
-        val annotation: String,
-        val breakpointCount: Int,
-        val active: Boolean,
-    )
+    return CheckoutResult(previousGroupId = previousId, activeGroupId = groupId, status = "ok")
+  }
 
-    @Serializable
-    data class GroupListResult(
-        val groups: List<GroupInfo>,
-        val activeGroupId: Int?,
-    )
+  // ──────────────────────────────────────────────────────────────────────────
+  // Result types
+  // ──────────────────────────────────────────────────────────────────────────
 
-    @Serializable
-    data class GroupResult(
-        val id: Int,
-        val annotation: String,
-        val previousGroupId: Int? = null,
-        val status: String,
-    )
+  @Serializable
+  data class GroupInfo(
+    val id: Int,
+    val annotation: String,
+    val breakpointCount: Int,
+    val active: Boolean,
+  )
 
-    @Serializable
-    data class CheckoutResult(
-        val previousGroupId: Int?,
-        val activeGroupId: Int,
-        val status: String,
-    )
+  @Serializable
+  data class GroupListResult(
+    val groups: List<GroupInfo>,
+    val activeGroupId: Int?,
+  )
+
+  @Serializable
+  data class GroupResult(
+    val id: Int,
+    val annotation: String,
+    val previousGroupId: Int? = null,
+    val status: String,
+  )
+
+  @Serializable
+  data class CheckoutResult(
+    val previousGroupId: Int?,
+    val activeGroupId: Int,
+    val status: String,
+  )
 }

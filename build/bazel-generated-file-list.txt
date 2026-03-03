@@ -932,6 +932,7 @@ plugins/cucumber-jvm-formatter
 plugins/cucumber-jvm-formatter3
 plugins/cucumber-jvm-formatter4
 plugins/cucumber-jvm-formatter5
+plugins/debug-map
 plugins/dev
 plugins/dev/intellij.dev
 plugins/dev/intellij.dev.codeInsight

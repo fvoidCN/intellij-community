@@ -17,33 +17,33 @@ import com.intellij.xdebugger.breakpoints.XLineBreakpoint
  */
 class DebugMapBreakpointListener(private val project: Project) : XBreakpointListener<XBreakpoint<*>> {
 
-    private val service get() = DebugMapService.getInstance(project)
+  private val service get() = DebugMapService.getInstance(project)
 
-    override fun breakpointAdded(breakpoint: XBreakpoint<*>) {
-        if (service.isSyncing) return
-        if (breakpoint !is XLineBreakpoint<*>) return
-        val activeGroupId = service.getActiveGroupId() ?: return
-        service.addBreakpointToGroup(activeGroupId, breakpoint.toDef())
-    }
+  override fun breakpointAdded(breakpoint: XBreakpoint<*>) {
+    if (service.isSyncing) return
+    if (breakpoint !is XLineBreakpoint<*>) return
+    val activeGroupId = service.getActiveGroupId() ?: return
+    service.addBreakpointToGroup(activeGroupId, breakpoint.toDef())
+  }
 
-    override fun breakpointRemoved(breakpoint: XBreakpoint<*>) {
-        if (service.isSyncing) return
-        if (breakpoint !is XLineBreakpoint<*>) return
-        val groupId = service.getBreakpointGroupId(breakpoint.fileUrl, breakpoint.line) ?: return
-        service.removeBreakpointFromGroup(groupId, breakpoint.fileUrl, breakpoint.line)
-    }
+  override fun breakpointRemoved(breakpoint: XBreakpoint<*>) {
+    if (service.isSyncing) return
+    if (breakpoint !is XLineBreakpoint<*>) return
+    val groupId = service.getBreakpointGroupId(breakpoint.fileUrl, breakpoint.line) ?: return
+    service.removeBreakpointFromGroup(groupId, breakpoint.fileUrl, breakpoint.line)
+  }
 
-    override fun breakpointChanged(breakpoint: XBreakpoint<*>) {
-        if (service.isSyncing) return
-        if (breakpoint !is XLineBreakpoint<*>) return
-        val groupId = service.getBreakpointGroupId(breakpoint.fileUrl, breakpoint.line) ?: return
-        service.addBreakpointToGroup(groupId, breakpoint.toDef())
-    }
+  override fun breakpointChanged(breakpoint: XBreakpoint<*>) {
+    if (service.isSyncing) return
+    if (breakpoint !is XLineBreakpoint<*>) return
+    val groupId = service.getBreakpointGroupId(breakpoint.fileUrl, breakpoint.line) ?: return
+    service.addBreakpointToGroup(groupId, breakpoint.toDef())
+  }
 
-    private fun XLineBreakpoint<*>.toDef() = BreakpointDef(
-        fileUrl = fileUrl,
-        line = line,
-        condition = conditionExpression?.expression,
-        logExpression = logExpressionObject?.expression,
-    )
+  private fun XLineBreakpoint<*>.toDef() = BreakpointDef(
+    fileUrl = fileUrl,
+    line = line,
+    condition = conditionExpression?.expression,
+    logExpression = logExpressionObject?.expression,
+  )
 }
