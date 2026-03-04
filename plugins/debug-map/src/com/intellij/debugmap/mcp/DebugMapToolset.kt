@@ -62,8 +62,11 @@ class DebugMapToolset : McpToolset {
     val service = DebugMapService.getInstance(project)
 
     val previousId = service.getActiveGroupId()
-    val id = service.createGroup(annotation)
-    writeAction { service.checkout(id) }
+    val id = writeAction {
+      val newId = service.createGroup(annotation)
+      service.checkout(newId)
+      newId
+    }
     return GroupResult(id = id, annotation = annotation, previousGroupId = previousId, status = "created")
   }
 

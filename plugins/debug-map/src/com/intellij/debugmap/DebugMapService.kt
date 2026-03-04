@@ -8,19 +8,22 @@ import com.intellij.debugmap.model.PersistedBreakpoint
 import com.intellij.debugmap.model.PersistedGroup
 import com.intellij.debugmap.model.PersistedState
 import com.intellij.debugmap.sync.BreakpointIdeSyncer
+import com.intellij.debugmap.sync.BreakpointMarkerTracker
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.StoragePathMacros
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.VirtualFile
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 @Service(Service.Level.PROJECT)
 @State(name = "DebugMap", storages = [Storage(StoragePathMacros.WORKSPACE_FILE)])
-class DebugMapService(val project: Project) : PersistentStateComponent<PersistedState> {
+class DebugMapService(val project: Project) : PersistentStateComponent<PersistedState>, Disposable {
 
   private val _groups = MutableStateFlow<List<GroupData>>(emptyList())
   val groups: StateFlow<List<GroupData>> = _groups.asStateFlow()
@@ -36,11 +39,15 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
   private val groupManager = GroupManager()
   private val breakpointDefManager = BreakpointDefManager()
   private val ideSyncer = BreakpointIdeSyncer(project)
+  private val markerTracker = BreakpointMarkerTracker(this)
 
   init {
     // Only initializes in-memory state; does NOT call syncState() so the StateFlow
     // keeps its emptyList() default until loadState() (or noStateLoaded) runs below.
     ensureDefaultGroupQuiet()
+  }
+
+  override fun dispose() {
   }
 
   private fun syncState() {
@@ -70,7 +77,7 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
         pg.breakpoints = breakpointDefManager.getGroupBreakpoints(group.id).map { def ->
           PersistedBreakpoint().also { pb ->
             pb.fileUrl = def.fileUrl
-            pb.line = def.line
+            pb.line = markerTracker.getCurrentLine(group.id, def)
             pb.typeId = def.typeId
             pb.condition = def.condition
             pb.logExpression = def.logExpression
@@ -161,10 +168,15 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
 
   /** Must be called within a writeAction. Switches active group and syncs IDE breakpoints. */
   fun checkout(targetGroupId: Int?) {
+    markerTracker.flushAll()
     ideSyncer.checkout(targetGroupId)
     if (targetGroupId != null) groupManager.touchGroup(targetGroupId)
     syncState()
+    markerTracker.initForOpenFiles()
   }
+
+  internal fun onFileOpened(file: VirtualFile) = markerTracker.onFileOpened(file)
+  internal fun onFileClosed(file: VirtualFile) = markerTracker.onFileClosed(file)
 
   /**
    * Ensures there is always at least one group and an active group.

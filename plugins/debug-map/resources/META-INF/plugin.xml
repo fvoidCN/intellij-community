@@ -27,6 +27,8 @@
   <projectListeners>
     <listener class="com.intellij.debugmap.listener.DebugMapBreakpointListener"
               topic="com.intellij.xdebugger.breakpoints.XBreakpointListener"/>
+    <listener class="com.intellij.debugmap.listener.DebugMapFileEditorListener"
+              topic="com.intellij.openapi.fileEditor.FileEditorManagerListener"/>
   </projectListeners>
 
 </idea-plugin>
