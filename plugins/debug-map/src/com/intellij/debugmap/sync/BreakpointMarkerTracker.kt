@@ -24,7 +24,7 @@ import kotlin.concurrent.withLock
  */
 class BreakpointMarkerTracker(private val service: DebugMapService) {
 
-  private class Entry(val groupId: Int, var def: BreakpointDef, val marker: RangeMarker)
+  private class Entry(var def: BreakpointDef, val marker: RangeMarker)
   private data class FileState(val listenerDisposable: Disposable)
 
   private val lock = ReentrantLock()
@@ -45,7 +45,7 @@ class BreakpointMarkerTracker(private val service: DebugMapService) {
           if (def.fileUrl != fileUrl || def.line >= document.lineCount) continue
           val start = document.getLineStartOffset(def.line)
           val end = document.getLineEndOffset(def.line)
-          entries.add(Entry(group.id, def, document.createRangeMarker(start, end)))
+          entries.add(Entry(def, document.createRangeMarker(start, end)))
           added = true
         }
       }
@@ -62,7 +62,7 @@ class BreakpointMarkerTracker(private val service: DebugMapService) {
   /** Returns the marker-tracked line for [def] in case a sync is pending. */
   fun getCurrentLine(groupId: Int, def: BreakpointDef): Int = lock.withLock {
     val entry = entries.find {
-      it.groupId == groupId && it.def.fileUrl == def.fileUrl && it.def.line == def.line
+      it.def.groupId == groupId && it.def.fileUrl == def.fileUrl && it.def.line == def.line
     }
     if (entry != null && entry.marker.isValid)
       entry.marker.document.getLineNumber(entry.marker.startOffset)
@@ -100,26 +100,30 @@ class BreakpointMarkerTracker(private val service: DebugMapService) {
     val toRemove = mutableListOf<Entry>()
     for (entry in entries.filter { it.def.fileUrl == fileUrl }) {
       if (!entry.marker.isValid) {
-        service.removeBreakpointFromGroup(entry.groupId, entry.def.fileUrl, entry.def.line)
+        service.removeBreakpointFromGroup(entry.def.groupId, entry.def.fileUrl, entry.def.line)
         toRemove.add(entry)
         continue
       }
       val newLine = entry.marker.document.getLineNumber(entry.marker.startOffset)
       if (newLine != entry.def.line) {
-        service.removeBreakpointFromGroup(entry.groupId, entry.def.fileUrl, entry.def.line)
-        service.upsertBreakpointInGroup(entry.groupId, entry.def.copy(line = newLine))
+        service.moveBreakpointLine(entry.def, newLine)
         entry.def = entry.def.copy(line = newLine)
       }
     }
     entries.removeAll(toRemove)
   }
 
-  private fun flushByUrl(fileUrl: String) {
-    syncToService(fileUrl)
+  /** Drops markers/listener for [fileUrl] without syncing to service. */
+  fun dropFileEntries(fileUrl: String) {
     val stateToDispose = lock.withLock {
       entries.removeIf { it.def.fileUrl == fileUrl }
       fileStates.remove(fileUrl)
     }
     stateToDispose?.let { Disposer.dispose(it.listenerDisposable) }
+  }
+
+  private fun flushByUrl(fileUrl: String) {
+    syncToService(fileUrl)
+    dropFileEntries(fileUrl)
   }
 }

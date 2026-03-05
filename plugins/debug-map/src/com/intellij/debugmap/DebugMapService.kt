@@ -110,6 +110,7 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
     val breakpointsSnapshot = state.groups.associate { pg ->
       pg.id to pg.breakpoints.map { pb ->
         BreakpointDef(
+          groupId = pg.id,
           fileUrl = pb.fileUrl,
           line = pb.line,
           typeId = pb.typeId,
@@ -152,6 +153,9 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
   fun getGroupBreakpoints(groupId: Int): List<BreakpointDef> =
     breakpointDefManager.getGroupBreakpoints(groupId)
 
+  fun getBreakpointsByFile(fileUrl: String): List<BreakpointDef> =
+    breakpointDefManager.getBreakpointsByFile(fileUrl)
+
   fun upsertBreakpointInGroup(groupId: Int, def: BreakpointDef) {
     breakpointDefManager.upsertBreakpointInGroup(groupId, def)
     syncState()
@@ -159,6 +163,11 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
 
   fun removeBreakpointFromGroup(groupId: Int, fileUrl: String, line: Int) {
     breakpointDefManager.removeBreakpointFromGroup(groupId, fileUrl, line)
+    syncState()
+  }
+
+  fun moveBreakpointLine(def: BreakpointDef, newLine: Int) {
+    breakpointDefManager.moveBreakpointLine(def, newLine)
     syncState()
   }
 
@@ -179,6 +188,8 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
 
   internal fun onFileOpened(file: VirtualFile) = markerTracker.onFileOpened(file)
   internal fun onFileClosed(file: VirtualFile) = markerTracker.onFileClosed(file)
+  internal fun getCurrentLine(groupId: Int, def: BreakpointDef) = markerTracker.getCurrentLine(groupId, def)
+  internal fun dropFileEntries(fileUrl: String) = markerTracker.dropFileEntries(fileUrl)
 
   /**
    * Ensures there is always at least one group and an active group.
@@ -207,6 +218,7 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
         breakpointDefManager.upsertBreakpointInGroup(
           targetGroupId,
           BreakpointDef(
+            groupId = targetGroupId,
             fileUrl = bp.fileUrl,
             line = bp.line,
             typeId = bp.type.id,

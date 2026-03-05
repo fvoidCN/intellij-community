@@ -47,7 +47,7 @@ internal fun DebugMapToolWindow(project: Project) {
   val treeState = rememberTreeState()
 
   val tree = remember(groups, activeGroupId) {
-    buildTree<DebugMapNode> {
+    buildTree {
       for (group in groups) {
         addNode(
           data = DebugMapNode.Group(group.id, group.annotation, group.id == activeGroupId),
@@ -55,7 +55,7 @@ internal fun DebugMapToolWindow(project: Project) {
         ) {
           for (bp in group.breakpoints) {
             addLeaf(
-              data = DebugMapNode.BreakpointItem(group.id, bp),
+              data = DebugMapNode.BreakpointItem(bp),
               id = "bp-${group.id}-${bp.fileUrl}-${bp.line}",
             )
           }
@@ -111,7 +111,7 @@ internal fun DebugMapToolWindow(project: Project) {
         selectedGroupId = elements.firstOrNull()?.let { elem ->
           when (val node = elem.data) {
             is DebugMapNode.Group -> node.id
-            is DebugMapNode.BreakpointItem -> node.groupId
+            is DebugMapNode.BreakpointItem -> node.def.groupId
           }
         }
       },

@@ -8,6 +8,7 @@ package com.intellij.debugmap.model
  * [compareTo] returns 0 iff (fileUrl, line) are equal — used by [java.util.TreeSet] for uniqueness.
  */
 data class BreakpointDef(
+  val groupId: Int,
   val fileUrl: String,
   val line: Int,
   val typeId: String = "java-line",

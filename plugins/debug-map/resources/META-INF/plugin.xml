@@ -30,6 +30,8 @@
               topic="com.intellij.xdebugger.breakpoints.XBreakpointListener"/>
     <listener class="com.intellij.debugmap.listener.DebugMapFileEditorListener"
               topic="com.intellij.openapi.fileEditor.FileEditorManagerListener"/>
+    <listener class="com.intellij.debugmap.listener.DebugMapFileReloadListener"
+              topic="com.intellij.openapi.fileEditor.FileDocumentManagerListener"/>
   </projectListeners>
 
 </idea-plugin>

@@ -16,7 +16,7 @@ class DebugMapBreakpointListener(private val project: Project) : XBreakpointList
   override fun breakpointAdded(breakpoint: XBreakpoint<*>) {
     if (breakpoint !is XLineBreakpoint<*>) return
     val activeGroupId = service.getActiveGroupId() ?: return
-    service.upsertBreakpointInGroup(activeGroupId, breakpoint.toDef())
+    service.upsertBreakpointInGroup(activeGroupId, breakpoint.toDef(activeGroupId))
   }
 
   override fun breakpointRemoved(breakpoint: XBreakpoint<*>) {
@@ -33,7 +33,7 @@ class DebugMapBreakpointListener(private val project: Project) : XBreakpointList
     // Fast path: position unchanged, only properties (condition, log, etc.) changed.
     val groupId = service.getBreakpointGroupId(breakpoint.fileUrl, breakpoint.line)
     if (groupId != null) {
-      service.upsertBreakpointInGroup(groupId, breakpoint.toDef())
+      service.upsertBreakpointInGroup(groupId, breakpoint.toDef(groupId))
       return
     }
 
@@ -45,13 +45,14 @@ class DebugMapBreakpointListener(private val project: Project) : XBreakpointList
       .filter { it.fileUrl == breakpoint.fileUrl }
       .mapTo(HashSet()) { it.line }
     val staleDef = service.getGroupBreakpoints(activeGroupId)
-      .firstOrNull { it.fileUrl == breakpoint.fileUrl && it.line !in ideLinesInFile }
-      ?: return
+                     .firstOrNull { it.fileUrl == breakpoint.fileUrl && it.line !in ideLinesInFile }
+                   ?: return
     service.removeBreakpointFromGroup(activeGroupId, staleDef.fileUrl, staleDef.line)
-    service.upsertBreakpointInGroup(activeGroupId, breakpoint.toDef())
+    service.upsertBreakpointInGroup(activeGroupId, breakpoint.toDef(activeGroupId))
   }
 
-  private fun XLineBreakpoint<*>.toDef() = BreakpointDef(
+  private fun XLineBreakpoint<*>.toDef(groupId: Int) = BreakpointDef(
+    groupId = groupId,
     fileUrl = fileUrl,
     line = line,
     typeId = type.id,
