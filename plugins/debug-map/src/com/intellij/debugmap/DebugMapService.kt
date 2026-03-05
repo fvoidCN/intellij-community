@@ -7,6 +7,7 @@ import com.intellij.debugmap.model.GroupData
 import com.intellij.debugmap.model.PersistedBreakpoint
 import com.intellij.debugmap.model.PersistedGroup
 import com.intellij.debugmap.model.PersistedState
+import com.intellij.debugmap.sync.BreakpointIdeManager
 import com.intellij.debugmap.sync.BreakpointIdeSyncer
 import com.intellij.debugmap.sync.BreakpointMarkerTracker
 import com.intellij.openapi.Disposable
@@ -38,13 +39,14 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
 
   private val groupManager = GroupManager()
   private val breakpointDefManager = BreakpointDefManager()
+  private val ideManager = BreakpointIdeManager(project)
   private val ideSyncer = BreakpointIdeSyncer(project)
   private val markerTracker = BreakpointMarkerTracker(this)
 
   init {
     // Only initializes in-memory state; does NOT call syncState() so the StateFlow
     // keeps its emptyList() default until loadState() (or noStateLoaded) runs below.
-    ensureDefaultGroupQuiet()
+    ensureDefaultGroup()
   }
 
   override fun dispose() {
@@ -118,7 +120,7 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
       }
     }
     breakpointDefManager.restore(breakpointsSnapshot)
-    ensureDefaultGroupQuiet()
+    ensureDefaultGroup()
     syncState()
   }
 
@@ -180,9 +182,8 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
 
   /**
    * Ensures there is always at least one group and an active group.
-   * Does NOT call syncState() — callers are responsible for that.
    */
-  private fun ensureDefaultGroupQuiet() {
+  private fun ensureDefaultGroup() {
     if (groupManager.getGroups().isEmpty()) {
       val id = groupManager.createGroup("Default")
       breakpointDefManager.initGroup(id)
@@ -191,5 +192,29 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
     else if (groupManager.activeGroupId == null) {
       groupManager.activeGroupId = groupManager.getGroups().first().id
     }
+  }
+
+  /**
+   * Imports IDE line breakpoints that are not yet assigned to any group into the active group.
+   * Must be called after the project is fully opened so that [XBreakpointManagerImpl] has
+   * loaded its state from disk. Intended to be called from [DebugMapStartupActivity].
+   */
+  internal fun importFloatingBreakpoints() {
+    val targetGroupId = groupManager.activeGroupId ?: return
+    ideManager.allLineBreakpoints()
+      .filter { !breakpointDefManager.isGroupBreakpoint(it.fileUrl, it.line) }
+      .forEach { bp ->
+        breakpointDefManager.upsertBreakpointInGroup(
+          targetGroupId,
+          BreakpointDef(
+            fileUrl = bp.fileUrl,
+            line = bp.line,
+            typeId = bp.type.id,
+            condition = bp.conditionExpression?.expression,
+            logExpression = bp.logExpressionObject?.expression,
+          )
+        )
+      }
+    syncState()
   }
 }

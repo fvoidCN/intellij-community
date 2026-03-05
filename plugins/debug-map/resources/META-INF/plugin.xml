@@ -9,6 +9,7 @@
   <vendor>JetBrains</vendor>
 
   <extensions defaultExtensionNs="com.intellij">
+    <postStartupActivity implementation="com.intellij.debugmap.sync.BreakpointSyncStartupActivity"/>
     <toolWindow id="Debug Map"
                 anchor="right"
                 secondary="true"

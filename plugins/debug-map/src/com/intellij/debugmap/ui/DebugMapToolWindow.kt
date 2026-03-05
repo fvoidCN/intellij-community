@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Alignment.Companion.BottomEnd
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.intellij.debugmap.DebugMapService
 import com.intellij.openapi.application.WriteAction
@@ -142,6 +143,9 @@ private fun GroupRow(node: DebugMapNode.Group) {
     Text(
       text = node.name,
       fontWeight = if (node.isActive) FontWeight.Bold else FontWeight.Normal,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+      modifier = Modifier.weight(1f),
     )
     if (node.isActive) {
       Text(text = "●")
@@ -176,6 +180,11 @@ private fun BreakpointRow(node: DebugMapNode.BreakpointItem) {
         )
       }
     }
-    Text(text = "$fileName:$lineNumber")
+    Text(
+      text = "$fileName:$lineNumber",
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+      modifier = Modifier.weight(1f),
+    )
   }
 }

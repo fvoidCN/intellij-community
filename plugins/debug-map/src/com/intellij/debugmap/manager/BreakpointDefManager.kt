@@ -10,7 +10,7 @@ class BreakpointDefManager {
   private val lock = ReentrantLock()
   private val groupBreakpoints = mutableMapOf<Int, TreeSet<BreakpointDef>>()
 
-  fun initGroup(groupId: Int) = lock.withLock {
+  fun initGroup(groupId: Int): TreeSet<BreakpointDef> = lock.withLock {
     groupBreakpoints.getOrPut(groupId) { TreeSet() }
   }
 
@@ -22,14 +22,14 @@ class BreakpointDefManager {
    * Adds or replaces a breakpoint definition in [groupId].
    * Uniqueness key is (fileUrl, line); [annotation] from the existing entry is preserved.
    */
-  fun upsertBreakpointInGroup(groupId: Int, def: BreakpointDef) = lock.withLock {
+  fun upsertBreakpointInGroup(groupId: Int, def: BreakpointDef): Boolean = lock.withLock {
     val set = groupBreakpoints.getOrPut(groupId) { TreeSet() }
     val existing = set.floor(def)?.takeIf { it.fileUrl == def.fileUrl && it.line == def.line }
     if (existing != null) set.remove(existing)
     set.add(if (existing != null) def.copy(annotation = existing.annotation) else def)
   }
 
-  fun removeBreakpointFromGroup(groupId: Int, fileUrl: String, line: Int) = lock.withLock {
+  fun removeBreakpointFromGroup(groupId: Int, fileUrl: String, line: Int): Boolean? = lock.withLock {
     groupBreakpoints[groupId]?.removeIf { it.fileUrl == fileUrl && it.line == line }
   }
 
@@ -43,7 +43,7 @@ class BreakpointDefManager {
       ?.key
   }
 
-  fun removeGroup(groupId: Int) = lock.withLock {
+  fun removeGroup(groupId: Int): TreeSet<BreakpointDef>? = lock.withLock {
     groupBreakpoints.remove(groupId)
   }
 
@@ -51,7 +51,7 @@ class BreakpointDefManager {
     groupBreakpoints.mapValues { it.value.toList() }
   }
 
-  fun restore(snapshot: Map<Int, List<BreakpointDef>>) = lock.withLock {
+  fun restore(snapshot: Map<Int, List<BreakpointDef>>): Unit = lock.withLock {
     groupBreakpoints.clear()
     snapshot.forEach { (groupId, defs) ->
       groupBreakpoints[groupId] = TreeSet<BreakpointDef>().also { it.addAll(defs) }

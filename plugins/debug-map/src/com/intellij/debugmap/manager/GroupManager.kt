@@ -35,11 +35,11 @@ class GroupManager {
 
   fun groupExists(groupId: Int): Boolean = lock.withLock { groups.containsKey(groupId) }
 
-  fun deleteGroup(groupId: Int) = lock.withLock { groups.remove(groupId) }
+  fun deleteGroup(groupId: Int): GroupData? = lock.withLock { groups.remove(groupId) }
 
   fun getGroupsSnapshot(): Map<Int, GroupData> = lock.withLock { groups.toMap() }
 
-  fun restore(snapshot: Map<Int, GroupData>, nextGroupId: Int, activeGroupId: Int?) = lock.withLock {
+  fun restore(snapshot: Map<Int, GroupData>, nextGroupId: Int, activeGroupId: Int?): Unit = lock.withLock {
     groups.clear()
     groups.putAll(snapshot)
     _nextGroupId = nextGroupId
