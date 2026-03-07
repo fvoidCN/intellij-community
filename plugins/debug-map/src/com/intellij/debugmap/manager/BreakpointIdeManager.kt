@@ -1,6 +1,12 @@
-package com.intellij.debugmap.sync
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+package com.intellij.debugmap.manager
 
+import com.intellij.debugmap.DebugMapService
+import com.intellij.debugmap.model.BookmarkDef
 import com.intellij.debugmap.model.BreakpointDef
+import com.intellij.debugmap.model.GroupData
+import com.intellij.ide.bookmark.BookmarkProvider
+import com.intellij.ide.bookmark.BookmarksManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
@@ -12,7 +18,8 @@ import com.intellij.xdebugger.breakpoints.XLineBreakpointType
 import com.intellij.xdebugger.impl.breakpoints.XBreakpointManagerImpl
 
 /**
- * Centralizes all interactions with [com.intellij.xdebugger.breakpoints.XBreakpointManager].
+ * Centralizes all interactions with [com.intellij.xdebugger.breakpoints.XBreakpointManager]
+ * and [BookmarksManager].
  *
  * Read operations must be called inside a read action.
  * Write operations must be called inside a write action.
@@ -81,6 +88,26 @@ class BreakpointIdeManager(private val project: Project) {
     }
   }
 
+  fun addBookmarkDefs(bookmarkDefs: List<BookmarkDef>) {
+    val manager = BookmarksManager.getInstance(project) ?: return
+    val provider = bookmarkProvider ?: return
+    for (def in bookmarkDefs) {
+      val bookmark = provider.createBookmark(mapOf("url" to def.fileUrl, "line" to "${def.line}")) ?: continue
+      manager.add(bookmark, def.type)
+    }
+  }
+
+  fun removeBookmarkDefs(bookmarkDefs: List<BookmarkDef>) {
+    val manager = BookmarksManager.getInstance(project) ?: return
+    val provider = bookmarkProvider ?: return
+    for (def in bookmarkDefs) {
+      val bookmark = provider.createBookmark(mapOf("url" to def.fileUrl, "line" to "${def.line}")) ?: continue
+      manager.remove(bookmark)
+    }
+  }
+
+  private val bookmarkProvider get() = BookmarkProvider.EP.getExtensions(project).minByOrNull { it.weight }
+
   fun getMasterBreakpoint(bp: XLineBreakpoint<*>): XLineBreakpoint<*>? {
     return depManager?.getMasterBreakpoint(bp) as? XLineBreakpoint<*>
   }
@@ -97,7 +124,32 @@ class BreakpointIdeManager(private val project: Project) {
     depManager?.clearMasterBreakpoint(bp)
   }
 
-  fun setDefaultGroup(groupId: Int?) {
-    (bpManager as? XBreakpointManagerImpl)?.defaultGroup = if (groupId != null) "group:$groupId" else null
+  fun setDefaultGroup(groupName: String?) {
+    (bpManager as? XBreakpointManagerImpl)?.defaultGroup = groupName
+    val bmManager = BookmarksManager.getInstance(project) ?: return
+    if (groupName == null) {
+      bmManager.getDefaultGroup()?.isDefault = false
+      return
+    }
+    val group = bmManager.getGroup(groupName) ?: bmManager.addGroup(groupName, false) ?: return
+    group.isDefault = true
+  }
+
+  /** Switches active group and syncs IDE breakpoints. Must be called on EDT inside a write action. */
+  fun checkout(targetGroupId: Int?, service: DebugMapService) {
+    val currentGroupId = service.getActiveGroupId()
+    // Null out first so breakpointRemoved/bookmarkRemoved events are ignored.
+    service.setActiveGroupId(null)
+    if (currentGroupId != null) {
+      removeBreakpointDefs(service.getGroupBreakpoints(currentGroupId))
+      removeBookmarkDefs(service.getGroupBookmarks(currentGroupId))
+    }
+
+    // Set target before adding so breakpointAdded/bookmarkAdded events sync to the right group.
+    service.setActiveGroupId(targetGroupId)
+    if (targetGroupId != null) {
+      addBreakpointDefs(service.getGroupBreakpoints(targetGroupId))
+      addBookmarkDefs(service.getGroupBookmarks(targetGroupId))
+    }
   }
 }

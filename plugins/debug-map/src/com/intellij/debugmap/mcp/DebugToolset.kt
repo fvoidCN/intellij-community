@@ -2,7 +2,7 @@
 
 package com.intellij.debugmap.mcp
 
-import com.intellij.debugmap.sync.BreakpointIdeManager
+import com.intellij.debugmap.manager.BreakpointIdeManager
 import com.intellij.mcpserver.McpToolset
 import com.intellij.mcpserver.annotations.McpDescription
 import com.intellij.mcpserver.annotations.McpTool

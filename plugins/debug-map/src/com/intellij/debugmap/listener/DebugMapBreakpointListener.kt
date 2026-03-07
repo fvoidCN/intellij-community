@@ -1,15 +1,22 @@
 package com.intellij.debugmap.listener
 
 import com.intellij.debugmap.DebugMapService
+import com.intellij.debugmap.model.BookmarkDef
 import com.intellij.debugmap.model.BreakpointDef
+import com.intellij.ide.bookmark.Bookmark
+import com.intellij.ide.bookmark.BookmarkGroup
+import com.intellij.ide.bookmark.BookmarkType
+import com.intellij.ide.bookmark.BookmarksListener
+import com.intellij.ide.bookmark.BookmarksManager
+import com.intellij.ide.bookmark.LineBookmark
 import com.intellij.openapi.project.Project
 import com.intellij.xdebugger.XDebuggerManager
 import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointListener
 import com.intellij.xdebugger.breakpoints.XLineBreakpoint
 
-/** Keeps [DebugMapService] in sync with IDE breakpoint lifecycle events. */
-class DebugMapBreakpointListener(private val project: Project) : XBreakpointListener<XBreakpoint<*>> {
+/** Keeps [DebugMapService] in sync with IDE breakpoint and bookmark lifecycle events. */
+class DebugMapBreakpointListener(private val project: Project) : XBreakpointListener<XBreakpoint<*>>, BookmarksListener {
 
   private val service get() = DebugMapService.getInstance(project)
 
@@ -21,9 +28,8 @@ class DebugMapBreakpointListener(private val project: Project) : XBreakpointList
 
   override fun breakpointRemoved(breakpoint: XBreakpoint<*>) {
     if (breakpoint !is XLineBreakpoint<*>) return
-    if (service.getActiveGroupId() == null) return
-    val groupId = service.getBreakpointGroupId(breakpoint.fileUrl, breakpoint.line) ?: return
-    service.removeBreakpointFromGroup(groupId, breakpoint.fileUrl, breakpoint.line)
+    val activeGroupId = service.getActiveGroupId() ?: return
+    service.removeBreakpointFromGroup(activeGroupId, breakpoint.fileUrl, breakpoint.line)
   }
 
   override fun breakpointChanged(breakpoint: XBreakpoint<*>) {
@@ -31,9 +37,8 @@ class DebugMapBreakpointListener(private val project: Project) : XBreakpointList
     val activeGroupId = service.getActiveGroupId() ?: return
 
     // Fast path: position unchanged, only properties (condition, log, etc.) changed.
-    val groupId = service.getBreakpointGroupId(breakpoint.fileUrl, breakpoint.line)
-    if (groupId != null) {
-      service.upsertBreakpointInGroup(groupId, breakpoint.toDef(groupId))
+    if (service.isGroupBreakpoint(breakpoint.fileUrl, breakpoint.line)) {
+      service.upsertBreakpointInGroup(activeGroupId, breakpoint.toDef(activeGroupId))
       return
     }
 
@@ -59,4 +64,43 @@ class DebugMapBreakpointListener(private val project: Project) : XBreakpointList
     condition = conditionExpression?.expression,
     logExpression = logExpressionObject?.expression,
   )
+
+  // region BookmarksListener
+
+  override fun bookmarkAdded(group: BookmarkGroup, bookmark: Bookmark) {
+    if (bookmark !is LineBookmark) return
+    val activeGroupId = service.getActiveGroupId() ?: return
+    service.upsertBookmarkInGroup(activeGroupId, bookmark.toDef(activeGroupId, group))
+  }
+
+  override fun bookmarkRemoved(group: BookmarkGroup, bookmark: Bookmark) {
+    if (bookmark !is LineBookmark) return
+    val activeGroupId = service.getActiveGroupId() ?: return
+    service.removeBookmarkFromGroup(activeGroupId, bookmark.file.url, bookmark.line)
+  }
+
+  override fun bookmarkChanged(group: BookmarkGroup, bookmark: Bookmark) {
+    if (bookmark !is LineBookmark) return
+    val activeGroupId = service.getActiveGroupId() ?: return
+    service.upsertBookmarkInGroup(activeGroupId, bookmark.toDef(activeGroupId, group))
+  }
+
+  override fun bookmarkTypeChanged(bookmark: Bookmark) {
+    if (bookmark !is LineBookmark) return
+    val activeGroupId = service.getActiveGroupId() ?: return
+    val existing = service.getGroupBookmarks(activeGroupId)
+                     .firstOrNull { it.fileUrl == bookmark.file.url && it.line == bookmark.line } ?: return
+    val newType = BookmarksManager.getInstance(project)?.getType(bookmark) ?: BookmarkType.DEFAULT
+    service.upsertBookmarkInGroup(activeGroupId, existing.copy(type = newType))
+  }
+
+  private fun LineBookmark.toDef(groupId: Int, bookmarkGroup: BookmarkGroup) = BookmarkDef(
+    groupId = groupId,
+    fileUrl = file.url,
+    line = line,
+    name = bookmarkGroup.getDescription(this),
+    type = BookmarksManager.getInstance(project)?.getType(this) ?: BookmarkType.DEFAULT,
+  )
+
+  // endregion
 }

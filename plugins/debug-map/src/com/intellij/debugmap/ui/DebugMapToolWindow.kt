@@ -1,5 +1,6 @@
 package com.intellij.debugmap.ui
 
+import androidx.compose.foundation.ContextMenuArea
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.intellij.debugmap.DebugMapService
+import com.intellij.debugmap.model.GroupData
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
@@ -36,6 +38,7 @@ import org.jetbrains.jewel.foundation.ExperimentalJewelApi
 import org.jetbrains.jewel.foundation.lazy.tree.buildTree
 import org.jetbrains.jewel.foundation.lazy.tree.rememberTreeState
 import org.jetbrains.jewel.ui.Orientation
+import org.jetbrains.jewel.ui.component.ContextMenuItemOption
 import org.jetbrains.jewel.ui.component.Divider
 import org.jetbrains.jewel.ui.component.Icon
 import org.jetbrains.jewel.ui.component.IconActionButton
@@ -79,9 +82,16 @@ internal fun DebugMapToolWindow(project: Project) {
     buildTree {
       for (group in groups) {
         addNode(
-          data = DebugMapNode.Group(group.id, group.name, group.id == activeGroupId, group.breakpoints.size),
+          data = DebugMapNode.Group(group.id, group.name, group.id == activeGroupId,
+                                   group.bookmarks.size + group.breakpoints.size),
           id = "group-${group.id}",
         ) {
+          for (bm in group.bookmarks) {
+            addLeaf(
+              data = DebugMapNode.BookmarkItem(bm),
+              id = "bm-${group.id}-${bm.fileUrl}-${bm.line}",
+            )
+          }
           for (bp in group.breakpoints) {
             addLeaf(
               data = DebugMapNode.BreakpointItem(bp),
@@ -132,23 +142,7 @@ internal fun DebugMapToolWindow(project: Project) {
         key = AllIconsKeys.Actions.Edit,
         contentDescription = "Rename",
         enabled = selectedNode != null,
-        onClick = {
-          when (val node = selectedNode) {
-            is DebugMapNode.Group -> {
-              val current = groups.find { it.id == node.id }?.name ?: return@IconActionButton
-              val name = Messages.showInputDialog(project, "Group name:", "Rename Group", null, current, null)
-                         ?: return@IconActionButton
-              if (name.isNotBlank()) service.renameGroup(node.id, name)
-            }
-            is DebugMapNode.BreakpointItem -> {
-              val current = node.def.name ?: ""
-              val name = Messages.showInputDialog(project, "Breakpoint name:", "Rename Breakpoint", null, current, null)
-                         ?: return@IconActionButton
-              service.renameBreakpoint(node.def, name)
-            }
-            null -> return@IconActionButton
-          }
-        },
+        onClick = { doRename(selectedNode, project, service, groups) },
       )
     }
 
@@ -162,20 +156,59 @@ internal fun DebugMapToolWindow(project: Project) {
         selectedNode = elements.firstOrNull()?.data
       },
       onElementDoubleClick = { element ->
-        val node = element.data
-        if (node is DebugMapNode.BreakpointItem) {
-          val file = VirtualFileManager.getInstance().findFileByUrl(node.def.fileUrl)
-          if (file != null) {
-            OpenFileDescriptor(project, file, node.def.line, 0).navigate(true)
+        when (val node = element.data) {
+          is DebugMapNode.BookmarkItem -> {
+            val file = VirtualFileManager.getInstance().findFileByUrl(node.def.fileUrl)
+            if (file != null) OpenFileDescriptor(project, file, node.def.line, 0).navigate(true)
           }
+          is DebugMapNode.BreakpointItem -> {
+            val file = VirtualFileManager.getInstance().findFileByUrl(node.def.fileUrl)
+            if (file != null) OpenFileDescriptor(project, file, node.def.line, 0).navigate(true)
+          }
+          else -> Unit
         }
       },
     ) { element ->
-      when (val node = element.data) {
-        is DebugMapNode.Group -> GroupRow(node)
-        is DebugMapNode.BreakpointItem -> BreakpointRow(node)
+      val node = element.data
+      ContextMenuArea(
+        items = {
+          listOf(
+            ContextMenuItemOption(
+              label = "Rename",
+              icon = AllIconsKeys.Actions.Edit,
+              action = { doRename(node, project, service, groups) },
+            ),
+          )
+        },
+      ) {
+        when (node) {
+          is DebugMapNode.Group -> GroupRow(node)
+          is DebugMapNode.BookmarkItem -> BookmarkRow(node)
+          is DebugMapNode.BreakpointItem -> BreakpointRow(node)
+        }
       }
     }
+  }
+}
+
+private fun doRename(node: DebugMapNode?, project: Project, service: DebugMapService, groups: List<GroupData>) {
+  when (node) {
+    is DebugMapNode.Group -> {
+      val current = groups.find { it.id == node.id }?.name ?: return
+      val name = Messages.showInputDialog(project, "Group name:", "Rename Group", null, current, null) ?: return
+      if (name.isNotBlank()) service.renameGroup(node.id, name)
+    }
+    is DebugMapNode.BookmarkItem -> {
+      val current = node.def.name ?: ""
+      val name = Messages.showInputDialog(project, "Bookmark name:", "Rename Bookmark", null, current, null) ?: return
+      service.renameBookmark(node.def, name)
+    }
+    is DebugMapNode.BreakpointItem -> {
+      val current = node.def.name ?: ""
+      val name = Messages.showInputDialog(project, "Breakpoint name:", "Rename Breakpoint", null, current, null) ?: return
+      service.renameBreakpoint(node.def, name)
+    }
+    null -> return
   }
 }
 
@@ -200,10 +233,43 @@ private fun GroupRow(node: DebugMapNode.Group) {
       modifier = Modifier.weight(1f),
     )
     Text(
-      text = node.breakpointCount.toString(),
+      text = node.itemCount.toString(),
       color = COLOR_INACTIVE,
       maxLines = 1,
     )
+  }
+}
+
+@Composable
+private fun BookmarkRow(node: DebugMapNode.BookmarkItem) {
+  val def = node.def
+  val fileName = def.fileUrl.substringAfterLast('/')
+  val lineNumber = def.line + 1
+  Row(
+    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 1.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(4.dp),
+  ) {
+    Spacer(Modifier.width(18.dp))
+    Icon(key = AllIconsKeys.Nodes.Bookmark, contentDescription = null, modifier = Modifier.size(16.dp))
+    if (!def.name.isNullOrBlank()) {
+      Text(text = def.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      Text(
+        text = "$fileName:$lineNumber",
+        color = COLOR_INACTIVE,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f),
+      )
+    }
+    else {
+      Text(
+        text = "$fileName:$lineNumber",
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f),
+      )
+    }
   }
 }
 

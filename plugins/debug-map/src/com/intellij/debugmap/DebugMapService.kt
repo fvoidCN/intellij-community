@@ -1,14 +1,15 @@
 package com.intellij.debugmap
 
-import com.intellij.debugmap.manager.BreakpointDefManager
-import com.intellij.debugmap.manager.GroupManager
+import com.intellij.debugmap.manager.BreakpointManager
+import com.intellij.debugmap.model.BookmarkDef
 import com.intellij.debugmap.model.BreakpointDef
 import com.intellij.debugmap.model.GroupData
+import com.intellij.debugmap.model.PersistedBookmark
 import com.intellij.debugmap.model.PersistedBreakpoint
 import com.intellij.debugmap.model.PersistedGroup
 import com.intellij.debugmap.model.PersistedState
-import com.intellij.debugmap.sync.BreakpointIdeManager
-import com.intellij.debugmap.sync.BreakpointIdeSyncer
+import com.intellij.ide.bookmark.BookmarkType
+import com.intellij.debugmap.manager.BreakpointIdeManager
 import com.intellij.debugmap.sync.BreakpointMarkerTracker
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.PersistentStateComponent
@@ -21,6 +22,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
 
 @Service(Service.Level.PROJECT)
 @State(name = "DebugMap", storages = [Storage(StoragePathMacros.WORKSPACE_FILE)])
@@ -37,10 +39,8 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
       project.getService(DebugMapService::class.java)
   }
 
-  private val groupManager = GroupManager()
-  private val breakpointDefManager = BreakpointDefManager()
+  private val breakpointManager = BreakpointManager()
   private val ideManager = BreakpointIdeManager(project)
-  private val ideSyncer = BreakpointIdeSyncer(project)
   private val markerTracker = BreakpointMarkerTracker(this)
 
   init {
@@ -53,30 +53,29 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
   }
 
   private fun syncState() {
-    _groups.value = groupManager.getGroups().map { group ->
-      group.copy(breakpoints = breakpointDefManager.getGroupBreakpoints(group.id))
-    }
-    _activeGroupId.value = groupManager.activeGroupId
+    _groups.value = breakpointManager.getGroups()
+    _activeGroupId.value = breakpointManager.activeGroupId
   }
 
   /**
-   * Sets activeGroupId directly on the manager without touch or syncState.
-   * Called by [BreakpointIdeSyncer] to drive listener behaviour during checkout phases.
+   * Sets the active group on the in-memory manager and updates both IDE default groups
+   * (breakpoint and bookmark) so that add/remove events during checkout phases are
+   * routed to the right group.
    */
   internal fun setActiveGroupId(groupId: Int?) {
-    groupManager.activeGroupId = groupId
+    breakpointManager.activeGroupId = groupId
+    val groupName = groupId?.let { breakpointManager.getGroup(it)?.name }
+    ideManager.setDefaultGroup(groupName)
   }
 
   override fun getState(): PersistedState = PersistedState().also { state ->
-    state.nextGroupId = groupManager.nextGroupId
-    state.activeGroupId = groupManager.activeGroupId ?: -1
-    state.groups = groupManager.getGroupsSnapshot().values.map { group ->
+    state.nextGroupId = breakpointManager.nextGroupId
+    state.activeGroupId = breakpointManager.activeGroupId ?: -1
+    state.groups = breakpointManager.getGroupsSnapshot().values.map { group ->
       PersistedGroup().also { pg ->
         pg.id = group.id
         pg.name = group.name
-        pg.createdAt = group.createdAt
-        pg.lastActivatedAt = group.lastActivatedAt
-        pg.breakpoints = breakpointDefManager.getGroupBreakpoints(group.id).map { def ->
+        pg.breakpoints = group.breakpoints.map { def ->
           PersistedBreakpoint().also { pb ->
             pb.fileUrl = def.fileUrl
             pb.line = markerTracker.getCurrentLine(group.id, def)
@@ -84,6 +83,14 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
             pb.condition = def.condition
             pb.logExpression = def.logExpression
             pb.name = def.name?.ifEmpty { null }
+          }
+        }.toMutableList()
+        pg.bookmarks = group.bookmarks.map { def ->
+          PersistedBookmark().also { pb ->
+            pb.fileUrl = def.fileUrl
+            pb.line = def.line
+            pb.name = def.name?.ifEmpty { null }
+            pb.bookmarkType = def.type.name
           }
         }.toMutableList()
       }
@@ -100,53 +107,60 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
       pg.id to GroupData(
         id = pg.id,
         name = pg.name,
-        createdAt = pg.createdAt,
-        lastActivatedAt = pg.lastActivatedAt,
+        breakpoints = pg.breakpoints.map { pb ->
+          BreakpointDef(
+            groupId = pg.id,
+            fileUrl = pb.fileUrl,
+            line = pb.line,
+            typeId = pb.typeId,
+            condition = pb.condition,
+            logExpression = pb.logExpression,
+            name = pb.name,
+          )
+        },
+        bookmarks = pg.bookmarks.map { pb ->
+          BookmarkDef(
+            groupId = pg.id,
+            fileUrl = pb.fileUrl,
+            line = pb.line,
+            name = pb.name,
+            type = runCatching { BookmarkType.valueOf(pb.bookmarkType) }.getOrDefault(BookmarkType.DEFAULT),
+          )
+        },
       )
     }
     val activeGroupId = if (state.activeGroupId == -1) null else state.activeGroupId
-    groupManager.restore(groupsSnapshot, state.nextGroupId, activeGroupId)
-
-    val breakpointsSnapshot = state.groups.associate { pg ->
-      pg.id to pg.breakpoints.map { pb ->
-        BreakpointDef(
-          groupId = pg.id,
-          fileUrl = pb.fileUrl,
-          line = pb.line,
-          typeId = pb.typeId,
-          condition = pb.condition,
-          logExpression = pb.logExpression,
-          name = pb.name,
-        )
-      }
-    }
-    breakpointDefManager.restore(breakpointsSnapshot)
+    breakpointManager.restore(groupsSnapshot, state.nextGroupId, activeGroupId)
     ensureDefaultGroup()
     syncState()
   }
 
-  val nextGroupId: Int get() = groupManager.nextGroupId
+  val nextGroupId: Int get() = breakpointManager.nextGroupId
 
   fun createGroup(name: String): Int {
-    val id = groupManager.createGroup(name.ifBlank { "Group ${groupManager.nextGroupId}" })
-    breakpointDefManager.initGroup(id)
+    val id = breakpointManager.createGroup(name.ifBlank { "Group ${breakpointManager.nextGroupId}" })
     syncState()
     return id
   }
 
   fun renameGroup(groupId: Int, name: String) {
-    groupManager.renameGroup(groupId, name)
+    breakpointManager.renameGroup(groupId, name)
     syncState()
   }
 
   fun renameBreakpoint(def: BreakpointDef, name: String) {
-    breakpointDefManager.upsertBreakpointInGroup(def.groupId, def.copy(name = name.trim()))
+    breakpointManager.upsertBreakpointInGroup(def.groupId, def.copy(name = name.trim()))
+    syncState()
+  }
+
+  fun renameBookmark(def: BookmarkDef, name: String) {
+    breakpointManager.upsertBookmarkInGroup(def.groupId, def.copy(name = name.trim()))
     syncState()
   }
 
   fun getGroups(): List<GroupData> = _groups.value
-  fun groupExists(groupId: Int): Boolean = groupManager.groupExists(groupId)
-  fun getActiveGroupId(): Int? = groupManager.activeGroupId
+  fun groupExists(groupId: Int): Boolean = breakpointManager.groupExists(groupId)
+  fun getActiveGroupId(): Int? = breakpointManager.activeGroupId
 
   /**
    * Deletes a group and its breakpoint definitions.
@@ -154,44 +168,66 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
    * Must be called within a writeAction.
    */
   fun deleteGroup(groupId: Int) {
-    check(groupManager.activeGroupId != groupId) { "Cannot delete the active group; checkout another group first" }
-    groupManager.deleteGroup(groupId)
-    breakpointDefManager.removeGroup(groupId)
+    check(breakpointManager.activeGroupId != groupId) { "Cannot delete the active group; checkout another group first" }
+    breakpointManager.deleteGroup(groupId)
     syncState()
   }
 
   fun getGroupBreakpoints(groupId: Int): List<BreakpointDef> =
-    breakpointDefManager.getGroupBreakpoints(groupId)
+    breakpointManager.getGroupBreakpoints(groupId)
+
+  fun getGroupBookmarks(groupId: Int): List<BookmarkDef> =
+    breakpointManager.getGroupBookmarks(groupId)
 
   fun getBreakpointsByFile(fileUrl: String): List<BreakpointDef> =
-    breakpointDefManager.getBreakpointsByFile(fileUrl)
+    breakpointManager.getBreakpointsByFile(fileUrl)
 
   fun upsertBreakpointInGroup(groupId: Int, def: BreakpointDef) {
-    breakpointDefManager.upsertBreakpointInGroup(groupId, def)
+    breakpointManager.upsertBreakpointInGroup(groupId, def)
     syncState()
   }
 
   fun removeBreakpointFromGroup(groupId: Int, fileUrl: String, line: Int) {
-    breakpointDefManager.removeBreakpointFromGroup(groupId, fileUrl, line)
+    breakpointManager.removeBreakpointFromGroup(groupId, fileUrl, line)
     syncState()
   }
 
   fun moveBreakpointLine(def: BreakpointDef, newLine: Int) {
-    breakpointDefManager.moveBreakpointLine(def, newLine)
+    breakpointManager.moveBreakpointLine(def, newLine)
     syncState()
   }
 
   fun isGroupBreakpoint(fileUrl: String, line: Int): Boolean =
-    breakpointDefManager.isGroupBreakpoint(fileUrl, line)
+    breakpointManager.isGroupBreakpoint(fileUrl, line)
 
   fun getBreakpointGroupId(fileUrl: String, line: Int): Int? =
-    breakpointDefManager.getBreakpointGroupId(fileUrl, line)
+    breakpointManager.getBreakpointGroupId(fileUrl, line)
+
+  fun getBookmarksByFile(fileUrl: String): List<BookmarkDef> =
+    breakpointManager.getBookmarksByFile(fileUrl)
+
+  fun getBookmarkGroupId(fileUrl: String, line: Int): Int? =
+    breakpointManager.getBookmarkGroupId(fileUrl, line)
+
+  fun upsertBookmarkInGroup(groupId: Int, def: BookmarkDef) {
+    breakpointManager.upsertBookmarkInGroup(groupId, def)
+    syncState()
+  }
+
+  fun removeBookmarkFromGroup(groupId: Int, fileUrl: String, line: Int) {
+    breakpointManager.removeBookmarkFromGroup(groupId, fileUrl, line)
+    syncState()
+  }
+
+  fun moveBookmarkLine(def: BookmarkDef, newLine: Int) {
+    breakpointManager.moveBookmarkLine(def, newLine)
+    syncState()
+  }
 
   /** Must be called within a writeAction. Switches active group and syncs IDE breakpoints. */
   fun checkout(targetGroupId: Int?) {
     markerTracker.flushAll()
-    ideSyncer.checkout(targetGroupId)
-    if (targetGroupId != null) groupManager.touchGroup(targetGroupId)
+    ideManager.checkout(targetGroupId, this)
     syncState()
     markerTracker.initForOpenFiles()
   }
@@ -205,13 +241,12 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
    * Ensures there is always at least one group and an active group.
    */
   private fun ensureDefaultGroup() {
-    if (groupManager.getGroups().isEmpty()) {
-      val id = groupManager.createGroup("Default")
-      breakpointDefManager.initGroup(id)
-      groupManager.activeGroupId = id
+    if (breakpointManager.getGroups().isEmpty()) {
+      val id = breakpointManager.createGroup("Default")
+      breakpointManager.activeGroupId = id
     }
-    else if (groupManager.activeGroupId == null) {
-      groupManager.activeGroupId = groupManager.getGroups().first().id
+    else if (breakpointManager.activeGroupId == null) {
+      breakpointManager.activeGroupId = breakpointManager.getGroups().first().id
     }
   }
 
@@ -221,11 +256,11 @@ class DebugMapService(val project: Project) : PersistentStateComponent<Persisted
    * loaded its state from disk. Intended to be called from [DebugMapStartupActivity].
    */
   internal fun importFloatingBreakpoints() {
-    val targetGroupId = groupManager.activeGroupId ?: return
+    val targetGroupId = breakpointManager.activeGroupId ?: return
     ideManager.allLineBreakpoints()
-      .filter { !breakpointDefManager.isGroupBreakpoint(it.fileUrl, it.line) }
+      .filter { !breakpointManager.isGroupBreakpoint(it.fileUrl, it.line) }
       .forEach { bp ->
-        breakpointDefManager.upsertBreakpointInGroup(
+        breakpointManager.upsertBreakpointInGroup(
           targetGroupId,
           BreakpointDef(
             groupId = targetGroupId,

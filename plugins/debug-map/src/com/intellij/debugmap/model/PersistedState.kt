@@ -10,13 +10,20 @@ class PersistedBreakpoint {
   var name: String? = null
 }
 
-/** XML-serializable group bean (includes its breakpoints). */
+/** XML-serializable bookmark bean. */
+class PersistedBookmark {
+  var fileUrl: String = ""
+  var line: Int = 0
+  var name: String? = null
+  var bookmarkType: String = "DEFAULT"
+}
+
+/** XML-serializable group bean (includes its breakpoints and bookmarks). */
 class PersistedGroup {
   var id: Int = 0
   var name: String = ""
-  var createdAt: Long = 0L
-  var lastActivatedAt: Long = 0L
   var breakpoints: MutableList<PersistedBreakpoint> = mutableListOf()
+  var bookmarks: MutableList<PersistedBookmark> = mutableListOf()
 }
 
 /** Root persisted state written to workspace.xml. */

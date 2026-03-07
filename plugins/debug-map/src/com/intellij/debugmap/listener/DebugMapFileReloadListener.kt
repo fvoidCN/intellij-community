@@ -7,6 +7,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.diff.Diff
 import com.intellij.util.diff.FilesTooBigForDiffException
+import com.intellij.debugmap.model.BookmarkDef
 import com.intellij.debugmap.model.BreakpointDef
 
 class DebugMapFileReloadListener(private val project: Project) : FileDocumentManagerListener {
@@ -16,6 +17,7 @@ class DebugMapFileReloadListener(private val project: Project) : FileDocumentMan
   private data class PendingReload(
     val oldContent: String,
     val breakpoints: List<Pair<BreakpointDef, Int>>, // def (carries groupId), currentLine
+    val bookmarks: List<Pair<BookmarkDef, Int>>,      // def (carries groupId), currentLine
   )
 
   private val pendingReloads = mutableMapOf<String, PendingReload>()
@@ -26,8 +28,11 @@ class DebugMapFileReloadListener(private val project: Project) : FileDocumentMan
     val breakpoints = service.getBreakpointsByFile(fileUrl)
       .filter { it.groupId != activeGroupId }
       .map { def -> def to service.getCurrentLine(def.groupId, def) }
-    if (breakpoints.isEmpty()) return
-    pendingReloads[fileUrl] = PendingReload(document.text, breakpoints)
+    val bookmarks = service.getBookmarksByFile(fileUrl)
+      .filter { it.groupId != activeGroupId }
+      .map { def -> def to def.line }
+    if (breakpoints.isEmpty() && bookmarks.isEmpty()) return
+    pendingReloads[fileUrl] = PendingReload(document.text, breakpoints, bookmarks)
     // Drop markers now so Document.setText() won't trigger syncToService with invalid markers.
     service.dropFileEntries(fileUrl)
   }
@@ -40,6 +45,12 @@ class DebugMapFileReloadListener(private val project: Project) : FileDocumentMan
       val targetLine = translateLine(pending.oldContent, newContent, currentLine) ?: currentLine
       if (targetLine != def.line) {
         service.moveBreakpointLine(def, targetLine)
+      }
+    }
+    for ((def, currentLine) in pending.bookmarks) {
+      val targetLine = translateLine(pending.oldContent, newContent, currentLine) ?: currentLine
+      if (targetLine != def.line) {
+        service.moveBookmarkLine(def, targetLine)
       }
     }
     service.onFileOpened(file)
