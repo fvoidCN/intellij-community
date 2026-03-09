@@ -1030,10 +1030,29 @@ public class JavaDocInfoGenerator {
       generateRefList(buffer, aClass, generateLink, refs, "implements");
       buffer.append('\n');
     }
+
+    refs = getPermitsListTypesSafe(aClass);
+    if (refs.length > 0) {
+      generateRefList(buffer, aClass, generateLink, refs, "permits");
+      buffer.append('\n');
+    }
+
     if (buffer.charAt(buffer.length() - 1) == '\n') {
       buffer.setLength(buffer.length() - 1);
     }
     return false;
+  }
+
+  /// FIXME (mbo): Kotlin ULC should not throw an UnsupportedException
+  ///
+  /// @see <a href="https://youtrack.jetbrains.com/issue/KTIJ-34752/">KTIJ-34752</a>
+  private static PsiClassType @NotNull [] getPermitsListTypesSafe(PsiClass aClass) {
+    try {
+      return aClass.getPermitsListTypes();
+    }
+    catch (UnsupportedOperationException e) {
+      return PsiClassType.EMPTY_ARRAY;
+    }
   }
 
   private void generateTypeParameterSignature(StringBuilder buffer, PsiTypeParameter parameter, SignaturePlace place) {
@@ -2251,7 +2270,7 @@ public class JavaDocInfoGenerator {
             }
           }
         }
-        buffer.append(attributes != null ? getStyledSpan(true, attributes, text) : text);
+        buffer.append(attributes != null ? getStyledSpan(true, attributes, text) : StringUtil.escapeXmlEntities(text));
       });
   }
 
@@ -2332,6 +2351,7 @@ public class JavaDocInfoGenerator {
     return -1;
   }
 
+  /// @return Whether the tag should be represented as a colored code block
   private static boolean isCodeBlock(PsiInlineDocTag tag) {
     return CODE_TAG.equals(tag.getName()) && isInPre(tag, true);
   }
@@ -2357,11 +2377,16 @@ public class JavaDocInfoGenerator {
   private void generateLiteralValue(StringBuilder buffer, PsiDocTag tag, boolean doEscaping) {
     StringBuilder tmpBuffer = new StringBuilder();
     PsiElement[] children = tag.getChildren();
-    for (int i = 2; i < children.length - 1; i++) { // process all children except tag opening/closing elements
+    int start = 2; // process all children except tag opening/closing elements
+    for (int i = start; i < children.length - 1; i++) {
       PsiElement child = children[i];
       if (isLeadingAsterisks(child)) continue;
       String elementText = child.getText();
       if (child instanceof PsiWhiteSpace) {
+        if (i == start && elementText.charAt(0) == ' ') {
+          // remove the first space between the tag name and the intended content
+          elementText = elementText.substring(1);
+        }
         int pos = elementText.lastIndexOf('\n');
         if (pos >= 0) elementText = elementText.substring(0, pos + 1); // skip whitespace before leading asterisk
       }
@@ -2375,29 +2400,8 @@ public class JavaDocInfoGenerator {
     }
   }
 
-  /// @param strict If `true`, the method expects the `<pre>` tag to be the only text right before the `element`
   private static boolean isInPre(@NotNull PsiElement element, boolean strict) {
-    PsiElement sibling = element.getPrevSibling();
-    while (sibling != null) {
-      if (sibling instanceof PsiDocToken && sibling.getNode().getElementType() != JavaDocTokenType.DOC_COMMENT_LEADING_ASTERISKS) {
-        String text = StringUtil.toLowerCase(sibling.getText());
-        int pos = text.lastIndexOf("pre>");
-        if (pos > 0) {
-          switch (text.charAt(pos - 1)) {
-            case '<' -> {
-              if (!strict || text.trim().endsWith("pre>")) return true;
-            }
-            case '/' -> {
-              return false;
-            }
-          }
-        } else if (strict && !text.trim().isEmpty()) {
-          return false;
-        }
-      }
-      sibling = sibling.getPrevSibling();
-    }
-    return false;
+    return JavaDocUtil.isInHtmlTag(element, "pre", strict);
   }
 
   private static void appendPlainText(StringBuilder buffer, String text) {
@@ -2417,7 +2421,12 @@ public class JavaDocInfoGenerator {
     PsiElement ref = getRefElement(tagElements);
     String label = getLinkLabel(tagElements, ref);
     StringBuilder b = new StringBuilder();
-    collectElementText(b, ref != null ? ref : tag);
+    if (ref != null) {
+      collectElementText(b, ref);
+    }
+    else {
+      collectElementText(b, tag, false);
+    }
     PsiElement context = tag;
     if (ref instanceof PsiDocFragmentRef) context = ref;
     generateLink(buffer, b.toString(), label, context, plainLink, !hasLinkLabel(tagElements, ref));
@@ -2535,19 +2544,24 @@ public class JavaDocInfoGenerator {
   }
 
   protected void collectElementText(StringBuilder buffer, PsiElement element) {
+    collectElementText(buffer, element, true);
+  }
+
+  protected void collectElementText(StringBuilder buffer, PsiElement element, boolean visitTag) {
     element.accept(new PsiRecursiveElementWalkingVisitor() {
       @Override
-      public void visitElement(@NotNull PsiElement element) {
-        if (element instanceof PsiInlineDocTag inlineDocTag) {
+      public void visitElement(@NotNull PsiElement subElement) {
+        if (subElement instanceof PsiInlineDocTag inlineDocTag && ((element != subElement) || visitTag)) {
           generateValue(buffer, new PsiElement[] {inlineDocTag}, ourEmptyElementsProvider);
           return;
         }
 
-        super.visitElement(element);
-        if (element instanceof PsiWhiteSpace ||
-            element instanceof PsiJavaToken ||
-            element instanceof PsiDocToken && ((PsiDocToken)element).getTokenType() != JavaDocTokenType.DOC_COMMENT_LEADING_ASTERISKS) {
-          buffer.append(element.getText());
+        super.visitElement(subElement);
+        if (subElement instanceof PsiWhiteSpace ||
+            subElement instanceof PsiJavaToken ||
+            subElement instanceof PsiDocToken &&
+            ((PsiDocToken)subElement).getTokenType() != JavaDocTokenType.DOC_COMMENT_LEADING_ASTERISKS) {
+          buffer.append(subElement.getText());
         }
       }
     });

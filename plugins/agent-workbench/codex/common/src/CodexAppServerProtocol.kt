@@ -97,6 +97,124 @@ internal class CodexAppServerProtocol {
       ?: throw CodexAppServerException("Codex app-server returned thread/start result without thread data")
   }
 
+  fun parseThreadReadActivityResult(parser: JsonParser): CodexThreadActivitySnapshot? {
+    if (parser.currentToken != JsonToken.START_OBJECT) {
+      parser.skipChildren()
+      return null
+    }
+
+    var snapshot: CodexThreadActivitySnapshot? = null
+    forEachObjectField(parser) { fieldName ->
+      when (fieldName) {
+        "thread", "data" -> {
+          snapshot = parseThreadActivitySnapshot(parser)
+        }
+        else -> parser.skipChildren()
+      }
+      true
+    }
+    return snapshot
+  }
+
+  fun parseNotification(payload: String): CodexAppServerNotification? {
+    jsonFactory.createParser(payload).use { parser ->
+      if (parser.nextToken() != JsonToken.START_OBJECT) return null
+
+      var hasResponseId = false
+      var method: String? = null
+      var params = ParsedNotificationParams()
+      forEachObjectField(parser) { fieldName ->
+        when (fieldName) {
+          "id" -> {
+            hasResponseId = parser.currentToken != JsonToken.VALUE_NULL
+            parser.skipChildren()
+          }
+          "method" -> method = readStringOrNull(parser)
+          "params" -> {
+            if (parser.currentToken == JsonToken.START_OBJECT) {
+              params = parseNotificationParams(parser)
+            }
+            else {
+              parser.skipChildren()
+            }
+          }
+          else -> parser.skipChildren()
+        }
+        true
+      }
+
+      if (hasResponseId) {
+        return null
+      }
+      val notificationMethod = method?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+      val notificationKind = notificationKindFromMethod(notificationMethod)
+      return CodexAppServerNotification(
+        method = notificationMethod,
+        kind = notificationKind,
+        threadId = params.threadId,
+        startedThread = if (notificationKind == CodexAppServerNotificationKind.THREAD_STARTED) params.startedThread else null,
+      )
+    }
+  }
+
+}
+
+private data class ParsedNotificationParams(
+  val threadId: String? = null,
+  val startedThread: CodexAppServerStartedThread? = null,
+)
+
+private data class ParsedNotificationThreadObject(
+  val threadId: String?,
+  val startedThread: CodexAppServerStartedThread?,
+)
+
+private fun parseNotificationParams(parser: JsonParser): ParsedNotificationParams {
+  var threadId: String? = null
+  var startedThread: CodexAppServerStartedThread? = null
+  forEachObjectField(parser) { fieldName ->
+    when (fieldName) {
+      "threadId", "thread_id" -> {
+        threadId = readStringOrNull(parser)?.trim()?.takeIf { it.isNotEmpty() }
+      }
+      "thread", "data" -> {
+        if (parser.currentToken == JsonToken.START_OBJECT) {
+          val parsedThreadObject = parseNotificationThreadObject(parser)
+          threadId = parsedThreadObject.threadId ?: threadId
+          startedThread = parsedThreadObject.startedThread ?: startedThread
+        }
+        else {
+          parser.skipChildren()
+        }
+      }
+      else -> parser.skipChildren()
+    }
+    true
+  }
+  return ParsedNotificationParams(
+    threadId = threadId,
+    startedThread = startedThread,
+  )
+}
+
+private fun parseNotificationThreadObject(parser: JsonParser): ParsedNotificationThreadObject {
+  val payload = parseThreadPayload(parser, allowNestedThread = false)
+  return ParsedNotificationThreadObject(
+    threadId = resolveThreadId(payload),
+    startedThread = createStartedThread(payload),
+  )
+}
+
+private fun notificationKindFromMethod(method: String): CodexAppServerNotificationKind {
+  return when (method) {
+    "thread/started" -> CodexAppServerNotificationKind.THREAD_STARTED
+    "thread/status/changed" -> CodexAppServerNotificationKind.THREAD_STATUS_CHANGED
+    "turn/started" -> CodexAppServerNotificationKind.TURN_STARTED
+    "turn/completed" -> CodexAppServerNotificationKind.TURN_COMPLETED
+    "item/commandExecution/outputDelta" -> CodexAppServerNotificationKind.COMMAND_EXECUTION_OUTPUT_DELTA
+    "item/commandExecution/terminalInteraction" -> CodexAppServerNotificationKind.TERMINAL_INTERACTION
+    else -> CodexAppServerNotificationKind.OTHER
+  }
 }
 
 private fun parseThreadArray(parser: JsonParser, archived: Boolean, threads: MutableList<CodexThread>, cwdFilter: String?) {
@@ -124,18 +242,9 @@ private fun parseThreadObject(parser: JsonParser, archived: Boolean, cwdFilter: 
 }
 
 private fun createCodexThread(payload: ThreadPayload, archived: Boolean): CodexThread? {
-  val threadId = payload.id ?: return null
-  val updatedAtValue = normalizeTimestamp(
-    payload.updatedAt
-      ?: payload.updatedAtAlt
-      ?: payload.createdAt
-      ?: payload.createdAtAlt
-      ?: 0L
-  )
-  val previewValue = payload.preview ?: payload.title ?: payload.name ?: payload.summary
-  val threadTitle = previewValue?.let { trimTitle(it) }?.takeIf { it.isNotBlank() } ?: "Thread ${threadId.take(8)}"
+  val threadId = resolveThreadId(payload) ?: return null
   return CodexThread(
-    id = threadId, title = threadTitle, updatedAt = updatedAtValue, archived = archived,
+    id = threadId, title = resolveThreadTitle(payload, threadId), updatedAt = resolveThreadUpdatedAt(payload), archived = archived,
     gitBranch = payload.gitBranch,
     cwd = payload.cwd?.let(::normalizeRootPath),
     sourceKind = payload.sourceKind,
@@ -151,6 +260,262 @@ private fun parseThreadFromResultObject(parser: JsonParser): CodexThread? {
   val payload = parseThreadPayload(parser, allowNestedThread = true)
   if (payload.nestedThread != null) return payload.nestedThread
   return createCodexThread(payload = payload, archived = false)
+}
+
+private fun createStartedThread(payload: ThreadPayload): CodexAppServerStartedThread? {
+  val threadId = resolveThreadId(payload) ?: return null
+  val cwd = payload.cwd?.let(::normalizeRootPath)?.takeIf { it.isNotBlank() } ?: return null
+  return CodexAppServerStartedThread(
+    id = threadId,
+    title = resolveThreadTitle(payload, threadId),
+    updatedAt = resolveThreadUpdatedAt(payload),
+    cwd = cwd,
+    statusKind = payload.statusKind,
+    activeFlags = payload.activeFlags,
+  )
+}
+
+private fun resolveThreadId(payload: ThreadPayload): String? {
+  return payload.id?.trim()?.takeIf { it.isNotEmpty() }
+}
+
+private fun resolveThreadUpdatedAt(payload: ThreadPayload): Long {
+  return normalizeTimestamp(
+    payload.updatedAt
+      ?: payload.updatedAtAlt
+      ?: payload.createdAt
+      ?: payload.createdAtAlt
+      ?: 0L
+  )
+}
+
+private fun resolveThreadTitle(payload: ThreadPayload, threadId: String): String {
+  val previewValue = payload.preview ?: payload.title ?: payload.name ?: payload.summary
+  return previewValue?.let(::trimTitle)?.takeIf { it.isNotBlank() } ?: "Thread ${threadId.take(8)}"
+}
+
+private data class ParsedTurnsActivity(
+  val latestUserItemIndex: Long,
+  val latestAssistantItemIndex: Long,
+  val isReviewing: Boolean,
+  val hasInProgressTurn: Boolean,
+)
+
+private data class ParsedTurnItemsActivity(
+  val latestUserItemIndex: Long,
+  val latestAssistantItemIndex: Long,
+  val isReviewing: Boolean,
+  val nextItemIndex: Long,
+)
+
+private fun parseThreadActivitySnapshot(parser: JsonParser): CodexThreadActivitySnapshot? {
+  if (parser.currentToken != JsonToken.START_OBJECT) {
+    parser.skipChildren()
+    return null
+  }
+
+  var id: String? = null
+  var updatedAt: Long? = null
+  var updatedAtAlt: Long? = null
+  var createdAt: Long? = null
+  var createdAtAlt: Long? = null
+  var statusKind = CodexThreadStatusKind.UNKNOWN
+  var activeFlags: List<CodexThreadActiveFlag> = emptyList()
+  var latestUserItemIndex = Long.MIN_VALUE
+  var latestAssistantItemIndex = Long.MIN_VALUE
+  var isReviewing = false
+  var hasInProgressTurn = false
+
+  forEachObjectField(parser) { fieldName ->
+    when (fieldName) {
+      "id" -> id = readStringOrNull(parser)
+      "updatedAt" -> updatedAt = readLongOrNull(parser)
+      "updated_at" -> updatedAtAlt = readLongOrNull(parser)
+      "createdAt" -> createdAt = readLongOrNull(parser)
+      "created_at" -> createdAtAlt = readLongOrNull(parser)
+      "status" -> {
+        val parsedStatus = parseThreadStatus(parser)
+        statusKind = parsedStatus.statusKind
+        activeFlags = parsedStatus.activeFlags
+      }
+      "turns" -> {
+        val parsedTurns = parseTurnsActivity(parser)
+        latestUserItemIndex = parsedTurns.latestUserItemIndex
+        latestAssistantItemIndex = parsedTurns.latestAssistantItemIndex
+        isReviewing = parsedTurns.isReviewing
+        hasInProgressTurn = parsedTurns.hasInProgressTurn
+      }
+      else -> parser.skipChildren()
+    }
+    true
+  }
+
+  val threadId = id ?: return null
+  val resolvedUpdatedAt = normalizeTimestamp(
+    updatedAt
+      ?: updatedAtAlt
+      ?: createdAt
+      ?: createdAtAlt
+      ?: 0L
+  )
+  val hasUnreadAssistantMessage = latestAssistantItemIndex > latestUserItemIndex
+  return CodexThreadActivitySnapshot(
+    threadId = threadId,
+    updatedAt = resolvedUpdatedAt,
+    statusKind = statusKind,
+    activeFlags = activeFlags,
+    hasUnreadAssistantMessage = hasUnreadAssistantMessage,
+    isReviewing = isReviewing,
+    hasInProgressTurn = hasInProgressTurn,
+  )
+}
+
+private fun parseTurnsActivity(parser: JsonParser): ParsedTurnsActivity {
+  if (parser.currentToken != JsonToken.START_ARRAY) {
+    parser.skipChildren()
+    return ParsedTurnsActivity(
+      latestUserItemIndex = Long.MIN_VALUE,
+      latestAssistantItemIndex = Long.MIN_VALUE,
+      isReviewing = false,
+      hasInProgressTurn = false,
+    )
+  }
+
+  var latestUserItemIndex = Long.MIN_VALUE
+  var latestAssistantItemIndex = Long.MIN_VALUE
+  var isReviewing = false
+  var hasInProgressTurn = false
+  var nextItemIndex = 0L
+
+  while (true) {
+    val token = parser.nextToken() ?: break
+    if (token == JsonToken.END_ARRAY) {
+      break
+    }
+    if (token != JsonToken.START_OBJECT) {
+      parser.skipChildren()
+      continue
+    }
+
+    forEachObjectField(parser) { fieldName ->
+      when (fieldName) {
+        "status" -> {
+          if (parseTurnInProgress(parser)) {
+            hasInProgressTurn = true
+          }
+        }
+        "items" -> {
+          val parsedItems = parseTurnItemsActivity(
+            parser = parser,
+            initialReviewing = isReviewing,
+            startItemIndex = nextItemIndex,
+          )
+          latestUserItemIndex = maxOf(latestUserItemIndex, parsedItems.latestUserItemIndex)
+          latestAssistantItemIndex = maxOf(latestAssistantItemIndex, parsedItems.latestAssistantItemIndex)
+          isReviewing = parsedItems.isReviewing
+          nextItemIndex = parsedItems.nextItemIndex
+        }
+        else -> parser.skipChildren()
+      }
+      true
+    }
+  }
+
+  return ParsedTurnsActivity(
+    latestUserItemIndex = latestUserItemIndex,
+    latestAssistantItemIndex = latestAssistantItemIndex,
+    isReviewing = isReviewing,
+    hasInProgressTurn = hasInProgressTurn,
+  )
+}
+
+private fun parseTurnItemsActivity(
+  parser: JsonParser,
+  initialReviewing: Boolean,
+  startItemIndex: Long,
+): ParsedTurnItemsActivity {
+  if (parser.currentToken != JsonToken.START_ARRAY) {
+    parser.skipChildren()
+    return ParsedTurnItemsActivity(
+      latestUserItemIndex = Long.MIN_VALUE,
+      latestAssistantItemIndex = Long.MIN_VALUE,
+      isReviewing = initialReviewing,
+      nextItemIndex = startItemIndex,
+    )
+  }
+
+  var latestUserItemIndex = Long.MIN_VALUE
+  var latestAssistantItemIndex = Long.MIN_VALUE
+  var isReviewing = initialReviewing
+  var nextItemIndex = startItemIndex
+
+  while (true) {
+    val token = parser.nextToken() ?: break
+    if (token == JsonToken.END_ARRAY) {
+      break
+    }
+    if (token != JsonToken.START_OBJECT) {
+      parser.skipChildren()
+      continue
+    }
+
+    var itemType: String? = null
+    forEachObjectField(parser) { itemFieldName ->
+      when (itemFieldName) {
+        "type" -> itemType = readStringOrNull(parser)
+        else -> parser.skipChildren()
+      }
+      true
+    }
+
+    nextItemIndex += 1
+    when (normalizeToken(itemType)) {
+      "usermessage" -> latestUserItemIndex = maxOf(latestUserItemIndex, nextItemIndex)
+      "agentmessage" -> latestAssistantItemIndex = maxOf(latestAssistantItemIndex, nextItemIndex)
+      "enteredreviewmode" -> isReviewing = true
+      "exitedreviewmode" -> isReviewing = false
+    }
+  }
+
+  return ParsedTurnItemsActivity(
+    latestUserItemIndex = latestUserItemIndex,
+    latestAssistantItemIndex = latestAssistantItemIndex,
+    isReviewing = isReviewing,
+    nextItemIndex = nextItemIndex,
+  )
+}
+
+private fun parseTurnInProgress(parser: JsonParser): Boolean {
+  return when (parser.currentToken) {
+    JsonToken.VALUE_STRING -> normalizeToken(parser.text) == "inprogress"
+    JsonToken.START_OBJECT -> {
+      var inProgress = false
+      forEachObjectField(parser) { fieldName ->
+        when (fieldName) {
+          "type" -> {
+            inProgress = normalizeToken(readStringOrNull(parser)) == "inprogress"
+          }
+          else -> parser.skipChildren()
+        }
+        true
+      }
+      inProgress
+    }
+    else -> {
+      parser.skipChildren()
+      false
+    }
+  }
+}
+
+private fun normalizeToken(value: String?): String {
+  return value
+    ?.trim()
+    ?.lowercase()
+    ?.replace("_", "")
+    ?.replace("-", "")
+    ?.replace(" ", "")
+    .orEmpty()
 }
 
 private data class ThreadPayload(

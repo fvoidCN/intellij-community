@@ -111,7 +111,7 @@ object CommunityModuleSets {
    * Recent files support (both backend and frontend).
    * Provides recently opened files UI and persistence.
    */
-  fun recentFiles(): ModuleSet = moduleSet("recentFiles") {
+  fun recentFiles(): ModuleSet = plugin("recentFiles") {
     module("intellij.platform.recentFiles")
     module("intellij.platform.recentFiles.frontend")
     module("intellij.platform.recentFiles.backend")
@@ -168,8 +168,6 @@ object CommunityModuleSets {
     module("intellij.platform.bookmarks.backend")
     module("intellij.platform.bookmarks.frontend")
 
-    moduleSet(recentFiles())
-
     module("intellij.platform.pluginManager.shared")
     module("intellij.platform.pluginManager.backend")
     module("intellij.platform.pluginManager.frontend")
@@ -218,6 +216,7 @@ object CommunityModuleSets {
   fun vcs(): ModuleSet = moduleSet("vcs") {
     module("intellij.platform.vcs.impl")
     module("intellij.platform.vcs.impl.exec")
+    module("intellij.platform.vcs.impl.debugger")
     module("intellij.platform.vcs.impl.lang")
     module("intellij.platform.vcs.impl.lang.actions")
     module("intellij.platform.vcs.log")
@@ -229,7 +228,6 @@ object CommunityModuleSets {
     embeddedModule("intellij.platform.vcs")
 
     moduleSet(vcsShared())
-    moduleSet(vcsFrontend())
   }
 
   /**
@@ -245,7 +243,8 @@ object CommunityModuleSets {
   /**
    * VCS frontend modules.
    */
-  fun vcsFrontend(): ModuleSet = moduleSet("vcs.frontend") {
+  @Suppress("unused")
+  fun vcsFrontend(): ModuleSet = plugin("vcs.frontend") {
     module("intellij.platform.vcs.impl.frontend")
   }
 

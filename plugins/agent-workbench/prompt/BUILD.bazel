@@ -15,6 +15,8 @@ jvm_library(
   resources = [":prompt_resources"],
   deps = [
     "@lib//:kotlin-stdlib",
+    "//libraries/kotlinx/serialization/core",
+    "//libraries/hash4j",
     "//platform/analysis-api:analysis",
     "//platform/core-api:core",
     "//platform/core-ui",
@@ -34,6 +36,10 @@ jvm_library(
   associates = [":prompt"],
   deps = [
     "@lib//:kotlin-stdlib",
+    "//libraries/kotlinx/serialization/core",
+    "//libraries/kotlinx/serialization/core:core_test_lib",
+    "//libraries/hash4j",
+    "//libraries/hash4j:hash4j_test_lib",
     "//platform/analysis-api:analysis",
     "//platform/analysis-api:analysis_test_lib",
     "//platform/core-api:core",
@@ -51,6 +57,8 @@ jvm_library(
     "//plugins/agent-workbench/common:common_test_lib",
     "//plugins/agent-workbench/sessions-core:agent-workbench-sessions-core",
     "//plugins/agent-workbench/sessions-core:agent-workbench-sessions-core_test_lib",
+    "//plugins/agent-workbench/prompt-vcs:agent-workbench-prompt-vcs",
+    "//plugins/agent-workbench/prompt-vcs:agent-workbench-prompt-vcs_test_lib",
     "//libraries/junit5",
     "//libraries/junit5:junit5_test_lib",
     "//platform/testFramework",

@@ -4,7 +4,7 @@ package com.intellij.agent.workbench.sessions
 import com.intellij.agent.workbench.sessions.codex.AgentChatOpenRoute
 import com.intellij.agent.workbench.sessions.codex.resolveAgentChatOpenRoute
 import org.assertj.core.api.Assertions.assertThat
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 class AgentSessionsOpenModeRoutingTest {
   @Test
@@ -57,8 +57,13 @@ class AgentSessionsOpenModeRoutingTest {
       openInDedicatedFrame = false,
       hasOpenSourceProject = false,
     )
+    val newThreadRoute = resolveAgentChatOpenRoute(
+      openInDedicatedFrame = false,
+      hasOpenSourceProject = false,
+    )
 
     assertThat(threadRoute).isEqualTo(AgentChatOpenRoute.OpenSourceProject)
     assertThat(subAgentRoute).isEqualTo(threadRoute)
+    assertThat(newThreadRoute).isEqualTo(threadRoute)
   }
 }

@@ -131,7 +131,7 @@
 
     <localInspection language="UAST" groupPath="Gradle" shortName="ConfigurationAvoidance"
                      bundle="messages.GradleInspectionBundle"
-                     key="inspection.display.name.configuration.avoidance" groupKey="inspection.best.practises" groupBundle="messages.GradleInspectionBundle"
+                     key="inspection.display.name.configuration.avoidance" groupKey="inspection.best.practices" groupBundle="messages.GradleInspectionBundle"
                      enabledByDefault="true" level="WARNING"
                      implementationClass="org.jetbrains.plugins.gradle.codeInspection.GradleConfigurationAvoidanceInspection"/>
 
@@ -161,11 +161,43 @@
 
     <localInspection language="UAST" groupPath="Gradle" shortName="AvoidDependencyNamedArgumentsNotation"
                      bundle="messages.GradleInspectionBundle"
-                     key="inspection.display.name.avoid.dependency.named.arguments.notation" groupKey="inspection.best.practises"
+                     key="inspection.display.name.avoid.dependency.named.arguments.notation" groupKey="inspection.best.practices"
                      groupBundle="messages.GradleInspectionBundle"
                      enabledByDefault="true" level="WEAK WARNING"
                      implementationClass="org.jetbrains.plugins.gradle.codeInspection.GradleAvoidDependencyNamedArgumentsNotationInspection"
-                     isInternal="true"/>
+                     isInternal="false"/>
+
+    <localInspection language="UAST" groupPath="Gradle" shortName="AvoidApplyPluginMethod"
+                     bundle="messages.GradleInspectionBundle"
+                     key="inspection.display.name.avoid.apply.plugin.method" groupKey="inspection.best.practices"
+                     groupBundle="messages.GradleInspectionBundle"
+                     enabledByDefault="true" level="WEAK WARNING"
+                     implementationClass="org.jetbrains.plugins.gradle.codeInspection.GradleAvoidApplyPluginMethodInspection"
+                     isInternal="false"/>
+
+    <localInspection language="UAST" groupPath="Gradle" shortName="AvoidRepositoriesInBuildGradle"
+                     bundle="messages.GradleInspectionBundle"
+                     key="inspection.display.name.avoid.repositories.in.build.gradle" groupKey="inspection.best.practices"
+                     groupBundle="messages.GradleInspectionBundle"
+                     enabledByDefault="false" level="WEAK WARNING"
+                     implementationClass="org.jetbrains.plugins.gradle.codeInspection.AvoidRepositoriesInBuildGradleInspection"
+                     isInternal="false"/>
+
+    <localInspection language="UAST" groupPath="Gradle" shortName="AvoidDuplicateDependencies"
+                     bundle="messages.GradleInspectionBundle"
+                     key="inspection.display.name.avoid.duplicate.dependencies" groupKey="inspection.best.practices"
+                     groupBundle="messages.GradleInspectionBundle"
+                     enabledByDefault="true" level="WEAK WARNING"
+                     implementationClass="org.jetbrains.plugins.gradle.codeInspection.GradleAvoidDuplicateDependenciesInspection"
+                     isInternal="false"/>
+
+    <localInspection language="UAST" groupPath="Gradle" shortName="TaskMissingDescription"
+                     bundle="messages.GradleInspectionBundle"
+                     key="inspection.display.name.task.missing.description" groupKey="inspection.best.practices"
+                     groupBundle="messages.GradleInspectionBundle"
+                     enabledByDefault="true" level="WEAK WARNING"
+                     implementationClass="org.jetbrains.plugins.gradle.codeInspection.GradleTaskMissingDescriptionInspection"
+                     isInternal="false"/>
 
   </extensions>
 </idea-plugin>

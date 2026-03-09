@@ -50,4 +50,28 @@ interface GradleDslInspectionProvider {
    */
   fun isRedundantKotlinStdLibInspectionAvailable(file: PsiFile): Boolean
   fun getRedundantKotlinStdLibInspectionVisitor(holder: ProblemsHolder, isOnTheFly: Boolean): PsiElementVisitor
+
+  /**
+   * @see GradleAvoidApplyPluginMethodInspection
+   */
+  fun isAvoidApplyPluginMethodInspectionAvailable(file: PsiFile): Boolean
+  fun getAvoidApplyPluginMethodInspectionVisitor(holder: ProblemsHolder, isOnTheFly: Boolean): PsiElementVisitor
+
+  /**
+   * @see AvoidRepositoriesInBuildGradleInspection
+   */
+  fun isAvoidRepositoriesInBuildGradleInspectionAvailable(file: PsiFile): Boolean
+  fun getAvoidRepositoriesInBuildGradleInspectionVisitor(holder: ProblemsHolder, isOnTheFly: Boolean): PsiElementVisitor
+
+  /**
+   * @see GradleAvoidDuplicateDependenciesInspection
+   */
+  fun isAvoidDuplicateDependenciesInspectionAvailable(file: PsiFile): Boolean
+  fun getAvoidDuplicateDependenciesInspectionVisitor(holder: ProblemsHolder, isOnTheFly: Boolean): PsiElementVisitor
+
+  /**
+   * @see GradleTaskMissingDescriptionInspection
+   */
+  fun isTaskMissingDescriptionInspectionAvailable(file: PsiFile): Boolean
+  fun getTaskMissingDescriptionInspectionVisitor(holder: ProblemsHolder, onTheFly: Boolean): PsiElementVisitor
 }

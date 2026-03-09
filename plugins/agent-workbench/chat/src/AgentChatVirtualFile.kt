@@ -3,6 +3,8 @@ package com.intellij.agent.workbench.chat
 
 import com.intellij.agent.workbench.common.AgentThreadActivity
 import com.intellij.agent.workbench.sessions.core.AgentSessionProvider
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessageTimeoutPolicy
+import com.intellij.agent.workbench.sessions.core.providers.AgentSessionTerminalLaunchSpec
 import com.intellij.openapi.diagnostic.debug
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.vfs.VirtualFileSystem
@@ -46,8 +48,11 @@ internal class AgentChatVirtualFile internal constructor(
   var shellCommand: List<String> = emptyList()
     private set
 
+  var shellEnvVariables: Map<String, String> = emptyMap()
+    private set
+
   @Volatile
-  private var startupShellCommandOverride: List<String>? = null
+  private var startupLaunchSpecOverride: AgentSessionTerminalLaunchSpec? = null
 
   var threadId: String = ""
     private set
@@ -67,6 +72,9 @@ internal class AgentChatVirtualFile internal constructor(
   var pendingLaunchMode: String? = null
     private set
 
+  var newThreadRebindRequestedAtMs: Long? = null
+    private set
+
   var initialComposedMessage: String? = null
     private set
 
@@ -76,16 +84,23 @@ internal class AgentChatVirtualFile internal constructor(
   var initialMessageSent: Boolean = false
     private set
 
+  var initialMessageTimeoutPolicy: AgentInitialMessageTimeoutPolicy = AgentInitialMessageTimeoutPolicy.ALLOW_TIMEOUT_FALLBACK
+    private set
+
+  private var initialMessageDispatchInFlight: AgentChatInitialMessageDispatch? = null
+
   @TestOnly
   internal constructor(
     projectPath: String,
     threadIdentity: String,
     shellCommand: List<String>,
+    shellEnvVariables: Map<String, String> = emptyMap(),
     threadId: String,
     threadTitle: String,
     subAgentId: String?,
     threadActivity: AgentThreadActivity = AgentThreadActivity.READY,
     projectHash: String = "",
+    initialMessageTimeoutPolicy: AgentInitialMessageTimeoutPolicy = AgentInitialMessageTimeoutPolicy.ALLOW_TIMEOUT_FALLBACK,
   ) : this(
     fileSystem = createStandaloneAgentChatVirtualFileSystemForTest(),
     resolution = AgentChatTabResolution.Resolved(AgentChatTabSnapshot.create(
@@ -96,10 +111,11 @@ internal class AgentChatVirtualFile internal constructor(
       threadTitle = threadTitle,
       subAgentId = subAgentId,
       shellCommand = shellCommand,
+      shellEnvVariables = shellEnvVariables,
       threadActivity = threadActivity,
+      initialMessageTimeoutPolicy = initialMessageTimeoutPolicy,
     ))
   )
-
 
   init {
     updateFromResolution(resolution)
@@ -147,21 +163,28 @@ internal class AgentChatVirtualFile internal constructor(
     return true
   }
 
-  fun updateCommandAndThreadId(shellCommand: List<String>, threadId: String) {
+  fun updateCommandAndThreadId(shellCommand: List<String>, shellEnvVariables: Map<String, String>, threadId: String) {
     this.shellCommand = shellCommand
+    this.shellEnvVariables = shellEnvVariables
     this.threadId = threadId
   }
 
   @Synchronized
-  fun setStartupShellCommandOverride(shellCommand: List<String>) {
-    startupShellCommandOverride = shellCommand
+  fun setStartupLaunchSpecOverride(launchSpec: AgentSessionTerminalLaunchSpec) {
+    startupLaunchSpecOverride = AgentSessionTerminalLaunchSpec(
+      command = launchSpec.command,
+      envVariables = shellEnvVariables + launchSpec.envVariables,
+    )
   }
 
   @Synchronized
-  fun consumeStartupShellCommand(): List<String> {
-    val startupCommand = startupShellCommandOverride
-    startupShellCommandOverride = null
-    return startupCommand ?: shellCommand
+  fun consumeStartupLaunchSpec(): AgentSessionTerminalLaunchSpec {
+    val startupLaunchSpec = startupLaunchSpecOverride
+    startupLaunchSpecOverride = null
+    return startupLaunchSpec ?: AgentSessionTerminalLaunchSpec(
+      command = shellCommand,
+      envVariables = shellEnvVariables,
+    )
   }
 
   fun updatePendingMetadata(
@@ -182,31 +205,91 @@ internal class AgentChatVirtualFile internal constructor(
     return true
   }
 
+  fun updateNewThreadRebindRequestedAtMs(newThreadRebindRequestedAtMs: Long?): Boolean {
+    if (this.newThreadRebindRequestedAtMs == newThreadRebindRequestedAtMs) {
+      return false
+    }
+    this.newThreadRebindRequestedAtMs = newThreadRebindRequestedAtMs
+    return true
+  }
+
+  @Synchronized
   fun updateInitialMessageMetadata(
     initialComposedMessage: String?,
     initialMessageToken: String?,
     initialMessageSent: Boolean,
+    initialMessageTimeoutPolicy: AgentInitialMessageTimeoutPolicy = AgentInitialMessageTimeoutPolicy.ALLOW_TIMEOUT_FALLBACK,
   ): Boolean {
     val normalizedMessage = initialComposedMessage?.takeIf { it.isNotBlank() }
     if (
       this.initialComposedMessage == normalizedMessage &&
       this.initialMessageToken == initialMessageToken &&
-      this.initialMessageSent == initialMessageSent
+      this.initialMessageSent == initialMessageSent &&
+      this.initialMessageTimeoutPolicy == initialMessageTimeoutPolicy
     ) {
       return false
     }
     this.initialComposedMessage = normalizedMessage
     this.initialMessageToken = initialMessageToken
     this.initialMessageSent = initialMessageSent
+    this.initialMessageTimeoutPolicy = initialMessageTimeoutPolicy
+    initialMessageDispatchInFlight = null
     return true
   }
 
-  fun markInitialMessageSent(): Boolean {
-    if (initialComposedMessage.isNullOrBlank() || initialMessageSent) {
+  @Synchronized
+  fun hasPendingInitialMessageForDispatch(): Boolean {
+    return !initialMessageSent && !initialComposedMessage.isNullOrBlank()
+  }
+
+  @Synchronized
+  fun shouldDelayInitialMessageOnReadinessTimeout(): Boolean {
+    if (initialMessageSent || initialMessageTimeoutPolicy != AgentInitialMessageTimeoutPolicy.REQUIRE_EXPLICIT_READINESS) {
+      return false
+    }
+    val message = initialComposedMessage?.trim().orEmpty()
+    return message.isNotEmpty()
+  }
+
+  @Synchronized
+  fun acquireInitialMessageDispatch(): AgentChatInitialMessageDispatch? {
+    if (initialMessageSent) {
+      return null
+    }
+    val message = initialComposedMessage?.trim().orEmpty()
+    if (message.isEmpty()) {
+      return null
+    }
+    val token = initialMessageToken
+    val inFlight = initialMessageDispatchInFlight
+    if (inFlight != null && inFlight.message == message && inFlight.token == token) {
+      return null
+    }
+    return AgentChatInitialMessageDispatch(message = message, token = token).also {
+      initialMessageDispatchInFlight = it
+    }
+  }
+
+  @Synchronized
+  fun completeInitialMessageDispatch(dispatch: AgentChatInitialMessageDispatch): Boolean {
+    if (initialMessageDispatchInFlight !== dispatch) {
+      return false
+    }
+    val currentMessage = initialComposedMessage?.trim().orEmpty()
+    if (currentMessage.isEmpty() || initialMessageSent || initialMessageToken != dispatch.token || currentMessage != dispatch.message) {
+      initialMessageDispatchInFlight = null
       return false
     }
     initialMessageSent = true
+    initialMessageDispatchInFlight = null
     return true
+  }
+
+  @Synchronized
+  fun cancelInitialMessageDispatch(dispatch: AgentChatInitialMessageDispatch) {
+    if (initialMessageDispatchInFlight === dispatch) {
+      initialMessageDispatchInFlight = null
+    }
   }
 
   fun markPendingFirstInputAtMsIfAbsent(timestampMs: Long): Boolean {
@@ -223,9 +306,52 @@ internal class AgentChatVirtualFile internal constructor(
   fun rebindPendingThread(
     threadIdentity: String,
     shellCommand: List<String>,
+    shellEnvVariables: Map<String, String>,
     threadId: String,
     threadTitle: String,
     threadActivity: AgentThreadActivity,
+  ): Boolean {
+    return rebindThread(
+      threadIdentity = threadIdentity,
+      shellCommand = shellCommand,
+      shellEnvVariables = shellEnvVariables,
+      threadId = threadId,
+      threadTitle = threadTitle,
+      threadActivity = threadActivity,
+      clearPendingMetadata = true,
+    )
+  }
+
+  fun rebindConcreteThread(
+    threadIdentity: String,
+    shellCommand: List<String>,
+    shellEnvVariables: Map<String, String>,
+    threadId: String,
+    threadTitle: String,
+    threadActivity: AgentThreadActivity,
+  ): Boolean {
+    if (isPendingThread || newThreadRebindRequestedAtMs == null) {
+      return false
+    }
+    return rebindThread(
+      threadIdentity = threadIdentity,
+      shellCommand = shellCommand,
+      shellEnvVariables = shellEnvVariables,
+      threadId = threadId,
+      threadTitle = threadTitle,
+      threadActivity = threadActivity,
+      clearPendingMetadata = false,
+    )
+  }
+
+  private fun rebindThread(
+    threadIdentity: String,
+    shellCommand: List<String>,
+    shellEnvVariables: Map<String, String>,
+    threadId: String,
+    threadTitle: String,
+    threadActivity: AgentThreadActivity,
+    clearPendingMetadata: Boolean,
   ): Boolean {
     var changed = false
     if (this.threadIdentity != threadIdentity) {
@@ -233,8 +359,8 @@ internal class AgentChatVirtualFile internal constructor(
       updateThreadCoordinates()
       changed = true
     }
-    if (this.shellCommand != shellCommand || this.threadId != threadId) {
-      updateCommandAndThreadId(shellCommand = shellCommand, threadId = threadId)
+    if (this.shellCommand != shellCommand || this.shellEnvVariables != shellEnvVariables || this.threadId != threadId) {
+      updateCommandAndThreadId(shellCommand = shellCommand, shellEnvVariables = shellEnvVariables, threadId = threadId)
       changed = true
     }
     if (updateThreadTitle(threadTitle)) {
@@ -243,16 +369,27 @@ internal class AgentChatVirtualFile internal constructor(
     if (updateThreadActivity(threadActivity)) {
       changed = true
     }
-    if (updatePendingMetadata(pendingCreatedAtMs = null, pendingFirstInputAtMs = null, pendingLaunchMode = null)) {
+    if (
+      clearPendingMetadata &&
+      updatePendingMetadata(pendingCreatedAtMs = null, pendingFirstInputAtMs = null, pendingLaunchMode = null)
+    ) {
       changed = true
     }
-    if (updateInitialMessageMetadata(initialComposedMessage = null, initialMessageToken = null, initialMessageSent = false)) {
+    if (updateNewThreadRebindRequestedAtMs(newThreadRebindRequestedAtMs = null)) {
+      changed = true
+    }
+    if (updateInitialMessageMetadata(
+        initialComposedMessage = null,
+        initialMessageToken = null,
+        initialMessageSent = false,
+        initialMessageTimeoutPolicy = AgentInitialMessageTimeoutPolicy.ALLOW_TIMEOUT_FALLBACK,
+      )) {
       changed = true
     }
 
     if (changed) {
       LOG.debug {
-        "Rebound pending tab(identity=$threadIdentity, subAgentId=$subAgentId, threadId=$threadId)"
+        "Rebound tab(identity=$threadIdentity, subAgentId=$subAgentId, threadId=$threadId)"
       }
     }
     return changed
@@ -273,8 +410,16 @@ internal class AgentChatVirtualFile internal constructor(
       subAgentId = snapshot.identity.subAgentId
       updateThreadCoordinates()
     }
-    if (snapshot.runtime.threadId.isNotBlank() || snapshot.runtime.shellCommand.isNotEmpty()) {
-      updateCommandAndThreadId(shellCommand = snapshot.runtime.shellCommand, threadId = snapshot.runtime.threadId)
+    if (
+      snapshot.runtime.threadId.isNotBlank() ||
+      snapshot.runtime.shellCommand.isNotEmpty() ||
+      snapshot.runtime.shellEnvVariables.isNotEmpty()
+    ) {
+      updateCommandAndThreadId(
+        shellCommand = snapshot.runtime.shellCommand,
+        shellEnvVariables = snapshot.runtime.shellEnvVariables,
+        threadId = snapshot.runtime.threadId,
+      )
     }
     if (snapshot.runtime.threadTitle.isNotBlank()) {
       updateThreadTitle(snapshot.runtime.threadTitle)
@@ -285,10 +430,12 @@ internal class AgentChatVirtualFile internal constructor(
       pendingFirstInputAtMs = snapshot.runtime.pendingFirstInputAtMs,
       pendingLaunchMode = snapshot.runtime.pendingLaunchMode,
     )
+    updateNewThreadRebindRequestedAtMs(snapshot.runtime.newThreadRebindRequestedAtMs)
     updateInitialMessageMetadata(
       initialComposedMessage = snapshot.runtime.initialComposedMessage,
       initialMessageToken = snapshot.runtime.initialMessageToken,
       initialMessageSent = snapshot.runtime.initialMessageSent,
+      initialMessageTimeoutPolicy = snapshot.runtime.initialMessageTimeoutPolicy,
     )
   }
 
@@ -312,17 +459,25 @@ internal class AgentChatVirtualFile internal constructor(
         threadId = threadId,
         threadTitle = threadTitle,
         shellCommand = shellCommand,
+        shellEnvVariables = shellEnvVariables,
         threadActivity = threadActivity,
         pendingCreatedAtMs = pendingCreatedAtMs,
         pendingFirstInputAtMs = pendingFirstInputAtMs,
         pendingLaunchMode = pendingLaunchMode,
+        newThreadRebindRequestedAtMs = newThreadRebindRequestedAtMs,
         initialComposedMessage = initialComposedMessage,
         initialMessageToken = initialMessageToken,
         initialMessageSent = initialMessageSent,
+        initialMessageTimeoutPolicy = initialMessageTimeoutPolicy,
       ),
     )
   }
 }
+
+internal class AgentChatInitialMessageDispatch internal constructor(
+  val message: String,
+  val token: String?,
+)
 
 private fun resolveFileName(tabKey: String): String {
   return "chat-$tabKey"

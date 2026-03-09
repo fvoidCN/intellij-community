@@ -54,7 +54,46 @@ data class CodexThread(
 )
 
 @Immutable
+data class CodexThreadActivitySnapshot(
+  @JvmField val threadId: String,
+  @JvmField val updatedAt: Long,
+  @JvmField val statusKind: CodexThreadStatusKind,
+  @JvmField val activeFlags: List<CodexThreadActiveFlag> = emptyList(),
+  @JvmField val hasUnreadAssistantMessage: Boolean = false,
+  @JvmField val isReviewing: Boolean = false,
+  @JvmField val hasInProgressTurn: Boolean = false,
+)
+
+@Immutable
 data class CodexThreadPage(
   @JvmField val threads: List<CodexThread>,
   @JvmField val nextCursor: String?,
+)
+
+enum class CodexAppServerNotificationKind {
+  THREAD_STARTED,
+  THREAD_STATUS_CHANGED,
+  TURN_STARTED,
+  TURN_COMPLETED,
+  COMMAND_EXECUTION_OUTPUT_DELTA,
+  TERMINAL_INTERACTION,
+  OTHER,
+}
+
+@Immutable
+data class CodexAppServerStartedThread(
+  @JvmField val id: String,
+  @JvmField val title: String,
+  @JvmField val updatedAt: Long,
+  @JvmField val cwd: String,
+  @JvmField val statusKind: CodexThreadStatusKind = CodexThreadStatusKind.UNKNOWN,
+  @JvmField val activeFlags: List<CodexThreadActiveFlag> = emptyList(),
+)
+
+@Immutable
+data class CodexAppServerNotification(
+  @JvmField val method: String,
+  @JvmField val kind: CodexAppServerNotificationKind,
+  @JvmField val threadId: String? = null,
+  @JvmField val startedThread: CodexAppServerStartedThread? = null,
 )

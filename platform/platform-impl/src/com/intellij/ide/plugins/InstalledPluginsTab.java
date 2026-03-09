@@ -10,6 +10,7 @@ import com.intellij.ide.plugins.newui.MyPluginModel;
 import com.intellij.ide.plugins.newui.PluginDetailsPageComponent;
 import com.intellij.ide.plugins.newui.PluginModelFacade;
 import com.intellij.ide.plugins.newui.PluginUiModel;
+import com.intellij.ide.plugins.newui.PluginUpdatesService;
 import com.intellij.ide.plugins.newui.PluginsGroup;
 import com.intellij.ide.plugins.newui.PluginsGroupComponent;
 import com.intellij.ide.plugins.newui.PluginsGroupComponentWithProgress;
@@ -69,6 +70,7 @@ class InstalledPluginsTab extends PluginsTab {
     ExtensionPointName.create("com.intellij.pluginCategoryPromotionProvider");
 
   private final @NotNull PluginModelFacade myPluginModelFacade;
+  private final @NotNull PluginUpdatesService myPluginUpdatesService;
   private final @NotNull CoroutineScope myCoroutineScope;
   private final @Nullable Consumer<String> mySearchInMarketplaceTabHandler;
 
@@ -87,10 +89,12 @@ class InstalledPluginsTab extends PluginsTab {
   private final JLabel myUpdateCounterBundled = new CountComponent();
 
   InstalledPluginsTab(@NotNull PluginModelFacade facade,
+                      @NotNull PluginUpdatesService service,
                       @NotNull CoroutineScope scope,
                       @Nullable Consumer<String> searchInMarketplaceHandler) {
     super();
     myPluginModelFacade = facade;
+    myPluginUpdatesService = service;
     myCoroutineScope = scope;
     mySearchInMarketplaceTabHandler = searchInMarketplaceHandler;
     myInstalledSearchGroup = new DefaultActionGroup();
@@ -271,8 +275,10 @@ class InstalledPluginsTab extends PluginsTab {
             myPluginModelFacade.getModel().addEnabledGroup(group);
           });
 
-        PluginUpdateListener.calculateUpdates(myCoroutineScope, updates -> {
-          List<PluginUiModel> updateModels = updates == null ? null : new ArrayList<>(updates);
+        myPluginUpdatesService.calculateUpdates(updates -> {
+          List<PluginUiModel> updateModels = updates == null ? List.of() : updates.stream()
+            .filter(plugin -> myPluginModelFacade.isEnabled(plugin))
+            .toList();
           if (ContainerUtil.isEmpty(updateModels)) {
             clearUpdates(myInstalledPanel);
             clearUpdates(myInstalledSearchPanel.getPanel());
@@ -586,12 +592,14 @@ class InstalledPluginsTab extends PluginsTab {
   private final class ComparablePluginsGroup extends PluginsGroup
     implements Comparable<ComparablePluginsGroup> {
 
+    @NotNull private final Map<PluginId, Boolean> myPluginsRequiresUltimateButItsDisabled;
     private boolean myIsEnable = false;
 
     private ComparablePluginsGroup(@NotNull @NlsSafe String category,
                                    @NotNull List<PluginUiModel> descriptors,
                                    @NotNull Map<PluginId, Boolean> pluginsRequiresUltimate) {
       super(category, PluginsGroupType.INSTALLED);
+      myPluginsRequiresUltimateButItsDisabled = pluginsRequiresUltimate;
 
       this.addModels(descriptors);
       sortByName();
@@ -603,6 +611,20 @@ class InstalledPluginsTab extends PluginsTab {
         ContainerUtil.exists(descriptors, it -> !pluginsRequiresUltimate.get(it.getPluginId()));
       mainAction.setVisible(hasPluginsAvailableForEnableDisable);
       titleWithEnabled(myPluginModelFacade);
+    }
+
+    @Override
+    public void titleWithEnabled(@NotNull PluginModelFacade pluginModelFacade) {
+      int enabled = 0;
+      for (PluginUiModel descriptor : models) {
+        if (pluginModelFacade.isLoaded(descriptor) &&
+            pluginModelFacade.isEnabled(descriptor) &&
+            !myPluginsRequiresUltimateButItsDisabled.getOrDefault(descriptor.getPluginId(), false) &&
+            !descriptor.isIncompatible()) {
+          enabled++;
+        }
+      }
+      titleWithCount(enabled);
     }
 
     @Override

@@ -5,9 +5,12 @@ import com.intellij.agent.workbench.common.icons.AgentWorkbenchCommonIcons
 import com.intellij.agent.workbench.sessions.core.AgentSessionLaunchMode
 import com.intellij.agent.workbench.sessions.core.AgentSessionProvider
 import com.intellij.agent.workbench.sessions.core.AgentSessionThread
+import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptInitialMessageRequest
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessagePlan
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionLaunchSpec
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionProviderBridge
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionSource
+import com.intellij.agent.workbench.sessions.core.providers.AgentSessionTerminalLaunchSpec
 import com.intellij.openapi.project.Project
 import javax.swing.Icon
 
@@ -15,6 +18,7 @@ internal class TestAgentSessionProviderBridge(
   override val provider: AgentSessionProvider,
   private val supportedModes: Set<AgentSessionLaunchMode>,
   private val cliAvailable: Boolean,
+  private val resumeEnvVariables: Map<String, String> = emptyMap(),
   override val yoloSessionLabelKey: String? = null,
 ) : AgentSessionProviderBridge {
   override val displayNameKey: String
@@ -43,16 +47,29 @@ internal class TestAgentSessionProviderBridge(
 
   override fun isCliAvailable(): Boolean = cliAvailable
 
-  override fun buildResumeCommand(sessionId: String): List<String> = listOf("test", "resume", sessionId)
+  override fun buildResumeLaunchSpec(sessionId: String): AgentSessionTerminalLaunchSpec {
+    return AgentSessionTerminalLaunchSpec(
+      command = listOf("test", "resume", sessionId),
+      envVariables = resumeEnvVariables,
+    )
+  }
 
-  override fun buildNewSessionCommand(mode: AgentSessionLaunchMode): List<String> = listOf("test", "new", mode.name)
+  override fun buildNewSessionLaunchSpec(mode: AgentSessionLaunchMode): AgentSessionTerminalLaunchSpec {
+    return AgentSessionTerminalLaunchSpec(command = listOf("test", "new", mode.name))
+  }
 
-  override fun buildNewEntryCommand(): List<String> = listOf("test")
+  override fun buildNewEntryLaunchSpec(): AgentSessionTerminalLaunchSpec {
+    return AgentSessionTerminalLaunchSpec(command = listOf("test"))
+  }
+
+  override fun buildInitialMessagePlan(request: AgentPromptInitialMessageRequest): AgentInitialMessagePlan {
+    return AgentInitialMessagePlan.composeDefault(request)
+  }
 
   override suspend fun createNewSession(path: String, mode: AgentSessionLaunchMode): AgentSessionLaunchSpec {
     return AgentSessionLaunchSpec(
       sessionId = null,
-      command = listOf("test", "create", path, mode.name),
+      launchSpec = AgentSessionTerminalLaunchSpec(command = listOf("test", "create", path, mode.name)),
     )
   }
 }

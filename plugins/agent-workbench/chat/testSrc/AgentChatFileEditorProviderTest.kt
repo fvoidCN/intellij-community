@@ -3,17 +3,24 @@ package com.intellij.agent.workbench.chat
 
 import com.intellij.agent.workbench.common.AgentThreadActivity
 import com.intellij.agent.workbench.common.icons.AgentWorkbenchCommonIcons
+import com.intellij.agent.workbench.common.withAgentThreadActivityBadge
+import com.intellij.agent.workbench.sessions.core.providers.AgentSessionTerminalLaunchSpec
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.util.IconLoader
+import com.intellij.testFramework.common.timeoutRunBlocking
+import com.intellij.testFramework.junit5.TestApplication
 import com.intellij.ui.IconManager
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
+@TestApplication
 class AgentChatFileEditorProviderTest {
   @BeforeEach
   fun setUp() {
     clearAgentChatIconCacheForTests()
+    IconLoader.activate()
     IconManager.activate(null)
   }
 
@@ -21,6 +28,7 @@ class AgentChatFileEditorProviderTest {
   fun tearDown() {
     clearAgentChatIconCacheForTests()
     IconManager.deactivate()
+    IconLoader.deactivate()
   }
 
   @Test
@@ -38,20 +46,35 @@ class AgentChatFileEditorProviderTest {
   }
 
   @Test
-  fun startupShellCommandOverrideIsConsumedOnceAndNotPersisted() {
+  fun startupLaunchSpecOverrideIsConsumedOnceAndNotPersisted() {
     val file = AgentChatVirtualFile(
       projectPath = "/work/project-a",
       threadIdentity = "CODEX:thread-1",
       shellCommand = listOf("codex", "resume", "thread-1"),
+      shellEnvVariables = mapOf("PATH" to "/usr/local/bin", "TERM" to "xterm-256color"),
       threadId = "thread-1",
       threadTitle = "Thread One",
       subAgentId = null,
     )
-    file.setStartupShellCommandOverride(listOf("codex", "--", "-run this"))
+    file.setStartupLaunchSpecOverride(
+      AgentSessionTerminalLaunchSpec(
+        command = listOf("codex", "--", "-run this"),
+        envVariables = mapOf("PATH" to "/custom/bin", "DISABLE_AUTOUPDATER" to "1"),
+      )
+    )
 
-    assertThat(file.consumeStartupShellCommand()).containsExactly("codex", "--", "-run this")
-    assertThat(file.consumeStartupShellCommand()).containsExactly("codex", "resume", "thread-1")
+    val startupLaunchSpec = file.consumeStartupLaunchSpec()
+    assertThat(startupLaunchSpec.command).containsExactly("codex", "--", "-run this")
+    assertThat(startupLaunchSpec.envVariables)
+      .containsExactlyEntriesOf(mapOf("PATH" to "/custom/bin", "TERM" to "xterm-256color", "DISABLE_AUTOUPDATER" to "1"))
+
+    val fallbackLaunchSpec = file.consumeStartupLaunchSpec()
+    assertThat(fallbackLaunchSpec.command).containsExactly("codex", "resume", "thread-1")
+    assertThat(fallbackLaunchSpec.envVariables)
+      .containsExactlyEntriesOf(mapOf("PATH" to "/usr/local/bin", "TERM" to "xterm-256color"))
     assertThat(file.toSnapshot().runtime.shellCommand).containsExactly("codex", "resume", "thread-1")
+    assertThat(file.toSnapshot().runtime.shellEnvVariables)
+      .containsExactlyEntriesOf(mapOf("PATH" to "/usr/local/bin", "TERM" to "xterm-256color"))
   }
 
   @Test
@@ -166,6 +189,29 @@ class AgentChatFileEditorProviderTest {
   }
 
   @Test
+  fun restoresPersistedThreadActivityOnLoad() {
+    val snapshot = AgentChatTabSnapshot.create(
+      projectHash = "hash-1",
+      projectPath = "/work/project-a",
+      threadIdentity = "CODEX:thread-status",
+      threadId = "thread-status",
+      threadTitle = "Thread",
+      subAgentId = null,
+      shellCommand = listOf("codex", "resume", "thread-status"),
+      threadActivity = AgentThreadActivity.UNREAD,
+    )
+    val store = AgentChatTabsStateService(null)
+    store.upsert(snapshot)
+    try {
+      val loaded = store.load(snapshot.tabKey)
+      assertThat(loaded?.runtime?.threadActivity).isEqualTo(AgentThreadActivity.UNREAD)
+    }
+    finally {
+      store.delete(snapshot.tabKey)
+    }
+  }
+
+  @Test
   fun normalizesLegacyIdentityStyleThreadIdOnLoad() {
     val snapshot = AgentChatTabSnapshot.create(
       projectHash = "hash-1",
@@ -189,7 +235,7 @@ class AgentChatFileEditorProviderTest {
   }
 
   @Test
-  fun promotesUnresolvedVirtualFileWhenDescriptorBecomesAvailable() {
+  fun promotesUnresolvedVirtualFileWhenDescriptorBecomesAvailable(): Unit = timeoutRunBlocking {
     val snapshot = AgentChatTabSnapshot.create(
       projectHash = "hash-1",
       projectPath = "/work/project-a",
@@ -207,7 +253,7 @@ class AgentChatFileEditorProviderTest {
     assertThat(unresolved.shellCommand).isEmpty()
 
     val resolved = fileSystem.getOrCreateFile(snapshot)
-    assertThat(resolved).isSameAs(unresolved)
+    assertThat(resolved).isNotSameAs(unresolved)
     assertThat(resolved.projectPath).isEqualTo(snapshot.identity.projectPath)
     assertThat(resolved.threadIdentity).isEqualTo(snapshot.identity.threadIdentity)
     assertThat(resolved.threadId).isEqualTo(snapshot.runtime.threadId)
@@ -342,16 +388,26 @@ class AgentChatFileEditorProviderTest {
   @Test
   fun usesFallbackIconForUnknownProviderIdentity() {
     val icon = providerIcon(threadIdentity = "unknown:thread-1", threadActivity = AgentThreadActivity.READY)
+    val expected = withAgentThreadActivityBadge(AllIcons.Toolwindows.ToolWindowMessages, AgentThreadActivity.READY)
 
-    assertThat(icon).isEqualTo(AllIcons.Toolwindows.ToolWindowMessages)
+    assertThat(icon).isNotEqualTo(AllIcons.Toolwindows.ToolWindowMessages)
+    assertThat(icon.javaClass).isEqualTo(expected.javaClass)
+    assertThat(icon.iconWidth).isEqualTo(expected.iconWidth)
+    assertThat(icon.iconHeight).isEqualTo(expected.iconHeight)
   }
 
   @Test
-  fun usesUnbadgedProviderIconForReadyAndBadgedIconForNonReadyActivity() {
+  fun usesBadgedProviderIconForAllActivities() {
     val readyIcon = providerIcon(threadIdentity = "codex:thread-1", threadActivity = AgentThreadActivity.READY)
+    val processingIcon = providerIcon(threadIdentity = "codex:thread-1", threadActivity = AgentThreadActivity.PROCESSING)
+    val reviewingIcon = providerIcon(threadIdentity = "codex:thread-1", threadActivity = AgentThreadActivity.REVIEWING)
     val unreadIcon = providerIcon(threadIdentity = "codex:thread-1", threadActivity = AgentThreadActivity.UNREAD)
 
-    assertThat(readyIcon).isEqualTo(AgentWorkbenchCommonIcons.Codex_14x14)
+    assertThat(readyIcon).isNotEqualTo(AgentWorkbenchCommonIcons.Codex_14x14)
+    assertThat(processingIcon).isNotEqualTo(readyIcon)
+    assertThat(reviewingIcon).isNotEqualTo(readyIcon)
     assertThat(unreadIcon).isNotEqualTo(readyIcon)
+    assertThat(unreadIcon).isNotEqualTo(processingIcon)
+    assertThat(unreadIcon).isNotEqualTo(reviewingIcon)
   }
 }

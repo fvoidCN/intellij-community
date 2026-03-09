@@ -3,25 +3,40 @@
 var __create = Object.create;
 var { getPrototypeOf: __getProtoOf, defineProperty: __defProp, getOwnPropertyNames: __getOwnPropNames } = Object;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __toESM = (mod, isNodeMode, target) => {
+function __accessProp(key) {
+  return this[key];
+}
+var __toESMCache_node, __toESMCache_esm, __toESM = (mod, isNodeMode, target) => {
+  var canCache = mod != null && typeof mod === "object";
+  if (canCache) {
+    var cache = isNodeMode ? __toESMCache_node ??= /* @__PURE__ */ new WeakMap : __toESMCache_esm ??= /* @__PURE__ */ new WeakMap, cached = cache.get(mod);
+    if (cached)
+      return cached;
+  }
   target = mod != null ? __create(__getProtoOf(mod)) : {};
   let to = isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: !0 }) : target;
   for (let key of __getOwnPropNames(mod))
     if (!__hasOwnProp.call(to, key))
       __defProp(to, key, {
-        get: () => mod[key],
+        get: __accessProp.bind(mod, key),
         enumerable: !0
       });
+  if (canCache)
+    cache.set(mod, to);
   return to;
 };
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, {
       get: all[name],
       enumerable: !0,
       configurable: !0,
-      set: (newValue) => all[name] = () => newValue
+      set: __exportSetter.bind(all, name)
     });
 };
 var __require = import.meta.require;
@@ -5638,8 +5653,8 @@ var require_utils2 = __commonJS((exports) => {
       output = `(?:^(?!${output}).*$)`;
     return output;
   };
-  exports.basename = (path7, { windows } = {}) => {
-    let segs = path7.split(windows ? /[\\/]/ : "/"), last = segs[segs.length - 1];
+  exports.basename = (path6, { windows } = {}) => {
+    let segs = path6.split(windows ? /[\\/]/ : "/"), last = segs[segs.length - 1];
     if (last === "")
       return segs[segs.length - 2];
     return last;
@@ -6531,7 +6546,7 @@ var require_picomatch2 = __commonJS((exports, module) => {
 });
 
 // ij-mcp-proxy.ts
-import path9 from "path";
+import path7 from "path";
 import { cwd, env } from "process";
 import { fileURLToPath } from "url";
 
@@ -20163,6 +20178,49 @@ class ExperimentalServerTasks {
   requestStream(request, resultSchema, options) {
     return this._server.requestStream(request, resultSchema, options);
   }
+  createMessageStream(params, options) {
+    let clientCapabilities = this._server.getClientCapabilities();
+    if ((params.tools || params.toolChoice) && !clientCapabilities?.sampling?.tools)
+      throw Error("Client does not support sampling tools capability.");
+    if (params.messages.length > 0) {
+      let lastMessage = params.messages[params.messages.length - 1], lastContent = Array.isArray(lastMessage.content) ? lastMessage.content : [lastMessage.content], hasToolResults = lastContent.some((c) => c.type === "tool_result"), previousMessage = params.messages.length > 1 ? params.messages[params.messages.length - 2] : void 0, previousContent = previousMessage ? Array.isArray(previousMessage.content) ? previousMessage.content : [previousMessage.content] : [], hasPreviousToolUse = previousContent.some((c) => c.type === "tool_use");
+      if (hasToolResults) {
+        if (lastContent.some((c) => c.type !== "tool_result"))
+          throw Error("The last message must contain only tool_result content if any is present");
+        if (!hasPreviousToolUse)
+          throw Error("tool_result blocks are not matching any tool_use from the previous message");
+      }
+      if (hasPreviousToolUse) {
+        let toolUseIds = new Set(previousContent.filter((c) => c.type === "tool_use").map((c) => c.id)), toolResultIds = new Set(lastContent.filter((c) => c.type === "tool_result").map((c) => c.toolUseId));
+        if (toolUseIds.size !== toolResultIds.size || ![...toolUseIds].every((id) => toolResultIds.has(id)))
+          throw Error("ids of tool_result blocks and tool_use blocks from previous message do not match");
+      }
+    }
+    return this.requestStream({
+      method: "sampling/createMessage",
+      params
+    }, CreateMessageResultSchema, options);
+  }
+  elicitInputStream(params, options) {
+    let clientCapabilities = this._server.getClientCapabilities(), mode = params.mode ?? "form";
+    switch (mode) {
+      case "url": {
+        if (!clientCapabilities?.elicitation?.url)
+          throw Error("Client does not support url elicitation.");
+        break;
+      }
+      case "form": {
+        if (!clientCapabilities?.elicitation?.form)
+          throw Error("Client does not support form elicitation.");
+        break;
+      }
+    }
+    let normalizedParams = mode === "form" && params.mode === void 0 ? { ...params, mode: "form" } : params;
+    return this.requestStream({
+      method: "elicitation/create",
+      params: normalizedParams
+    }, ElicitResultSchema, options);
+  }
   async getTask(taskId, options) {
     return this._server.getTask({ taskId }, options);
   }
@@ -21204,16 +21262,31 @@ async function auth(provider, options) {
   }
 }
 async function authInternal(provider, { serverUrl, authorizationCode, scope, resourceMetadataUrl, fetchFn }) {
-  let resourceMetadata, authorizationServerUrl;
-  try {
-    if (resourceMetadata = await discoverOAuthProtectedResourceMetadata(serverUrl, { resourceMetadataUrl }, fetchFn), resourceMetadata.authorization_servers && resourceMetadata.authorization_servers.length > 0)
-      authorizationServerUrl = resourceMetadata.authorization_servers[0];
-  } catch {}
-  if (!authorizationServerUrl)
-    authorizationServerUrl = new URL("/", serverUrl);
-  let resource = await selectResourceURL(serverUrl, provider, resourceMetadata), metadata = await discoverAuthorizationServerMetadata(authorizationServerUrl, {
-    fetchFn
-  }), clientInformation = await Promise.resolve(provider.clientInformation());
+  let cachedState = await provider.discoveryState?.(), resourceMetadata, authorizationServerUrl, metadata, effectiveResourceMetadataUrl = resourceMetadataUrl;
+  if (!effectiveResourceMetadataUrl && cachedState?.resourceMetadataUrl)
+    effectiveResourceMetadataUrl = new URL(cachedState.resourceMetadataUrl);
+  if (cachedState?.authorizationServerUrl) {
+    if (authorizationServerUrl = cachedState.authorizationServerUrl, resourceMetadata = cachedState.resourceMetadata, metadata = cachedState.authorizationServerMetadata ?? await discoverAuthorizationServerMetadata(authorizationServerUrl, { fetchFn }), !resourceMetadata)
+      try {
+        resourceMetadata = await discoverOAuthProtectedResourceMetadata(serverUrl, { resourceMetadataUrl: effectiveResourceMetadataUrl }, fetchFn);
+      } catch {}
+    if (metadata !== cachedState.authorizationServerMetadata || resourceMetadata !== cachedState.resourceMetadata)
+      await provider.saveDiscoveryState?.({
+        authorizationServerUrl: String(authorizationServerUrl),
+        resourceMetadataUrl: effectiveResourceMetadataUrl?.toString(),
+        resourceMetadata,
+        authorizationServerMetadata: metadata
+      });
+  } else {
+    let serverInfo = await discoverOAuthServerInfo(serverUrl, { resourceMetadataUrl: effectiveResourceMetadataUrl, fetchFn });
+    authorizationServerUrl = serverInfo.authorizationServerUrl, metadata = serverInfo.authorizationServerMetadata, resourceMetadata = serverInfo.resourceMetadata, await provider.saveDiscoveryState?.({
+      authorizationServerUrl: String(authorizationServerUrl),
+      resourceMetadataUrl: effectiveResourceMetadataUrl?.toString(),
+      resourceMetadata,
+      authorizationServerMetadata: metadata
+    });
+  }
+  let resource = await selectResourceURL(serverUrl, provider, resourceMetadata), clientInformation = await Promise.resolve(provider.clientInformation());
   if (!clientInformation) {
     if (authorizationCode !== void 0)
       throw Error("Existing OAuth client information is required when exchanging an authorization code");
@@ -21416,6 +21489,21 @@ async function discoverAuthorizationServerMetadata(authorizationServerUrl, { fet
       return OpenIdProviderDiscoveryMetadataSchema.parse(await response.json());
   }
   return;
+}
+async function discoverOAuthServerInfo(serverUrl, opts) {
+  let resourceMetadata, authorizationServerUrl;
+  try {
+    if (resourceMetadata = await discoverOAuthProtectedResourceMetadata(serverUrl, { resourceMetadataUrl: opts?.resourceMetadataUrl }, opts?.fetchFn), resourceMetadata.authorization_servers && resourceMetadata.authorization_servers.length > 0)
+      authorizationServerUrl = resourceMetadata.authorization_servers[0];
+  } catch {}
+  if (!authorizationServerUrl)
+    authorizationServerUrl = String(new URL("/", serverUrl));
+  let authorizationServerMetadata = await discoverAuthorizationServerMetadata(authorizationServerUrl, { fetchFn: opts?.fetchFn });
+  return {
+    authorizationServerUrl,
+    authorizationServerMetadata,
+    resourceMetadata
+  };
 }
 async function startAuthorization(authorizationServerUrl, { metadata, clientInformation, redirectUrl, scope, state, resource }) {
   let authorizationUrl;
@@ -22680,7 +22768,7 @@ function isLineBreakChar(code) {
 }
 
 // proxy-tools/handlers/apply-patch.ts
-var BEGIN_MARKER = "*** Begin Patch", END_MARKER = "*** End Patch", ADD_PREFIX = "*** Add File: ", UPDATE_PREFIX = "*** Update File: ", DELETE_PREFIX = "*** Delete File: ", MOVE_PREFIX = "*** Move to: ", END_OF_FILE = "*** End of File", HEREDOC_PREFIXES = /* @__PURE__ */ new Set(["<<EOF", "<<'EOF'", '<<"EOF"']), TRUNCATION_ERROR = "file content truncated while reading";
+var BEGIN_MARKER = "*** Begin Patch", END_MARKER = "*** End Patch", ADD_PREFIX = "*** Add File: ", UPDATE_PREFIX = "*** Update File: ", DELETE_PREFIX = "*** Delete File: ", MOVE_PREFIX = "*** Move to: ", END_OF_FILE = "*** End of File", DIFF_GIT_PREFIX = "diff --git ", NO_NEWLINE_MARKER = "\\ No newline at end of file", HEREDOC_PREFIXES = /* @__PURE__ */ new Set(["<<EOF", "<<'EOF'", '<<"EOF"']), TRUNCATION_ERROR = "file content truncated while reading", UNIFIED_DIFF_HEADER_REGEX = /^@@+\s*-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s*@@+$/;
 async function handleApplyPatchTool(args, projectPath, callUpstreamTool) {
   let patchText = extractPatchText(args), operations = parsePatch(patchText), touched = 0;
   for (let op of operations) {
@@ -22699,7 +22787,7 @@ async function handleApplyPatchTool(args, projectPath, callUpstreamTool) {
       continue;
     }
     if (op.type === "update") {
-      let original = await readFileTextForPatch(relative, absolute, projectPath, callUpstreamTool), updated = applyHunks(original, op.hunks), resolvedTarget = op.moveTo ? resolvePathInProject(projectPath, op.moveTo, "path") : null, moveTarget = resolvedTarget && resolvedTarget.relative !== relative ? resolvedTarget : null;
+      let original = await readFileTextForPatch(relative, absolute, projectPath, callUpstreamTool), updated = op.hunks.length === 0 ? original : applyHunks(original, op.hunks), resolvedTarget = op.moveTo ? resolvePathInProject(projectPath, op.moveTo, "path") : null, moveTarget = resolvedTarget && resolvedTarget.relative !== relative ? resolvedTarget : null;
       if (moveTarget)
         await ensureParentDir(moveTarget.absolute), await runGitMv(relative, moveTarget.relative, projectPath), await callUpstreamTool("create_new_file", {
           pathInProject: moveTarget.relative,
@@ -22774,14 +22862,36 @@ function unwrapHeredocLines(lines) {
     return lines;
   return lines.slice(1, -1);
 }
+function stripUnifiedDiffHeader(trimmed) {
+  if (UNIFIED_DIFF_HEADER_REGEX.test(trimmed))
+    return "";
+  return trimmed.length > 2 ? trimmed.slice(2).trim() : "";
+}
 function parsePatch(text) {
-  let lines = unwrapHeredocLines(splitLines2(text.trim())), startIndex = lines.findIndex((line) => line.trim() === BEGIN_MARKER);
+  let lines = unwrapHeredocLines(splitLines2(text.trim())), markerRange = findPatchMarkerRange(lines);
+  if (markerRange) {
+    if (looksLikeGitDiff(lines, markerRange.bodyStart, markerRange.bodyEnd))
+      return parseGitDiffPatch(lines, markerRange.bodyStart, markerRange.bodyEnd);
+    return parseCodexPatch(lines, markerRange.bodyStart, markerRange.bodyEnd);
+  }
+  if (looksLikeGitDiff(lines, 0, lines.length))
+    return parseGitDiffPatch(lines, 0, lines.length);
+  throw Error("patch must include *** Begin Patch");
+}
+function findPatchMarkerRange(lines) {
+  let startIndex = lines.findIndex((line) => line.trim() === BEGIN_MARKER);
   if (startIndex === -1)
-    throw Error("patch must include *** Begin Patch");
+    return null;
   let endIndexRelative = lines.slice(startIndex + 1).findIndex((line) => line.trim() === END_MARKER);
   if (endIndexRelative === -1)
     throw Error("patch must include *** End Patch");
-  let endIndex = startIndex + 1 + endIndexRelative, operations = [], i = startIndex + 1;
+  return {
+    bodyStart: startIndex + 1,
+    bodyEnd: startIndex + 1 + endIndexRelative
+  };
+}
+function parseCodexPatch(lines, startIndex, endIndex) {
+  let operations = [], i = startIndex;
   while (i < endIndex) {
     let line = lines[i], headerLine = line.trimStart();
     if (headerLine.startsWith(ADD_PREFIX)) {
@@ -22828,39 +22938,8 @@ function parsePatch(text) {
           i += 1;
           continue;
         }
-        let header = null;
-        if (isHunkHeaderLine(lines[i])) {
-          let trimmed = lines[i].trim(), headerText = trimmed.length > 2 ? trimmed.slice(2).trim() : "";
-          header = headerText === "" ? null : headerText, i += 1;
-        } else if (hunks.length === 0) {
-          if (!isDiffLine(lines[i]))
-            throw Error("Expected @@ hunk header");
-        } else
-          throw Error("Expected @@ hunk header");
-        let hunkLines = [], isEndOfFile = !1;
-        while (i < endIndex && !isHunkHeaderLine(lines[i]) && !isPatchHeaderLine(lines[i])) {
-          let hunkLine = lines[i];
-          if (hunkLine === END_OF_FILE) {
-            isEndOfFile = !0, i += 1;
-            break;
-          }
-          if (hunkLine === "") {
-            hunkLines.push({ prefix: " ", text: "" }), i += 1;
-            continue;
-          }
-          if (![" ", "+", "-"].includes(hunkLine[0])) {
-            if (hunkLines.length === 0)
-              throw Error("Hunk lines must start with space, +, or -");
-            break;
-          }
-          hunkLines.push({
-            prefix: hunkLine[0],
-            text: hunkLine.slice(1)
-          }), i += 1;
-        }
-        if (hunkLines.length === 0)
-          throw Error("Empty hunk in Update File");
-        hunks.push({ header, lines: hunkLines, isEndOfFile });
+        let parsed = parseCodexHunk(lines, i, endIndex, hunks.length === 0);
+        hunks.push(parsed.hunk), i = parsed.nextIndex;
       }
       if (hunks.length === 0)
         throw Error("Update File requires at least one hunk");
@@ -22876,6 +22955,273 @@ function parsePatch(text) {
   if (operations.length === 0)
     throw Error("patch did not contain any operations");
   return operations;
+}
+function parseCodexHunk(lines, startIndex, endIndex, isFirstHunk) {
+  let i = startIndex, header = null, allowsStrictPair = !1;
+  if (isHunkHeaderLine(lines[i])) {
+    let trimmed = lines[i].trim(), headerText = stripUnifiedDiffHeader(trimmed);
+    header = headerText === "" ? null : headerText, allowsStrictPair = trimmed === "@@", i += 1;
+  } else if (isFirstHunk) {
+    if (!isDiffLine(lines[i]))
+      throw Error("Expected @@ hunk header");
+  } else
+    throw Error("Expected @@ hunk header");
+  if (allowsStrictPair && i < endIndex && isStrictPairBlockStart(lines[i]))
+    return parseStrictPairHunk(lines, i, endIndex);
+  let hunkLines = [], isEndOfFile = !1;
+  while (i < endIndex && !isHunkHeaderLine(lines[i]) && !isPatchHeaderLine(lines[i])) {
+    let hunkLine = lines[i];
+    if (hunkLine === END_OF_FILE) {
+      isEndOfFile = !0, i += 1;
+      break;
+    }
+    if (hunkLine === "") {
+      hunkLines.push({ prefix: " ", text: "" }), i += 1;
+      continue;
+    }
+    if (![" ", "+", "-"].includes(hunkLine[0])) {
+      if (hunkLines.length === 0)
+        throw Error("Hunk lines must start with space, +, or -");
+      break;
+    }
+    hunkLines.push({
+      prefix: hunkLine[0],
+      text: hunkLine.slice(1)
+    }), i += 1;
+  }
+  if (hunkLines.length === 0)
+    throw Error("Empty hunk in Update File");
+  return {
+    hunk: { header, lines: hunkLines, isEndOfFile },
+    nextIndex: i
+  };
+}
+function parseStrictPairHunk(lines, startIndex, endIndex) {
+  let i = startIndex, oldLines = [], hasSecondDelimiter = !1;
+  while (i < endIndex && !isPatchHeaderLine(lines[i])) {
+    let line = lines[i];
+    if (line.trim() === "@@") {
+      hasSecondDelimiter = !0, i += 1;
+      break;
+    }
+    if (isPrefixedDiffLine(line))
+      throw Error("Strict @@ pair hunk cannot mix prefixed diff lines");
+    oldLines.push(line), i += 1;
+  }
+  if (!hasSecondDelimiter)
+    throw Error("Strict @@ pair hunk requires second @@ delimiter");
+  let newLines = [];
+  while (i < endIndex && !isPatchHeaderLine(lines[i]) && !isHunkHeaderLine(lines[i])) {
+    let line = lines[i];
+    if (isPrefixedDiffLine(line))
+      throw Error("Strict @@ pair hunk cannot mix prefixed diff lines");
+    newLines.push(line), i += 1;
+  }
+  if (oldLines.length === 0 && newLines.length === 0)
+    throw Error("Empty hunk in Update File");
+  return {
+    hunk: {
+      header: null,
+      lines: [
+        ...oldLines.map((text) => ({ prefix: "-", text })),
+        ...newLines.map((text) => ({ prefix: "+", text }))
+      ],
+      isEndOfFile: !1
+    },
+    nextIndex: i
+  };
+}
+function parseGitDiffPatch(lines, startIndex, endIndex) {
+  let operations = [], i = startIndex;
+  while (i < endIndex) {
+    while (i < endIndex && lines[i].trim() === "")
+      i += 1;
+    if (i >= endIndex)
+      break;
+    let parsed = parseGitOperation(lines, i, endIndex);
+    operations.push(parsed.operation), i = parsed.nextIndex;
+  }
+  if (operations.length === 0)
+    throw Error("patch did not contain any operations");
+  return operations;
+}
+function parseGitOperation(lines, startIndex, endIndex) {
+  let i = startIndex, oldPath = null, newPath = null, renameFrom = null, renameTo = null, hunks = [], sawGitSignal = !1;
+  while (i < endIndex) {
+    let line = lines[i], trimmed = line.trimStart();
+    if (trimmed === "") {
+      i += 1;
+      continue;
+    }
+    if (trimmed.startsWith(DIFF_GIT_PREFIX)) {
+      if (sawGitSignal)
+        break;
+      sawGitSignal = !0;
+      let parsedPaths = parseDiffGitHeaderPaths(trimmed);
+      if (parsedPaths)
+        oldPath = parsedPaths.oldPath, newPath = parsedPaths.newPath;
+      i += 1;
+      continue;
+    }
+    if (line.startsWith("--- ")) {
+      oldPath = parseGitMarkerPath(line.slice(4)), sawGitSignal = !0, i += 1;
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      newPath = parseGitMarkerPath(line.slice(4)), sawGitSignal = !0, i += 1;
+      continue;
+    }
+    if (trimmed.startsWith("rename from ")) {
+      renameFrom = parseGitRenamePath(trimmed.slice(12)), sawGitSignal = !0, i += 1;
+      continue;
+    }
+    if (trimmed.startsWith("rename to ")) {
+      renameTo = parseGitRenamePath(trimmed.slice(10)), sawGitSignal = !0, i += 1;
+      continue;
+    }
+    if (trimmed === NO_NEWLINE_MARKER) {
+      i += 1;
+      continue;
+    }
+    if (trimmed.startsWith("Binary files ") || trimmed === "GIT binary patch")
+      throw Error("Binary git patch is not supported");
+    if (isGitMetadataLine(trimmed)) {
+      sawGitSignal = !0, i += 1;
+      continue;
+    }
+    if (isHunkHeaderLine(line)) {
+      sawGitSignal = !0;
+      let parsedHunk = parseUnifiedHunk(lines, i, endIndex);
+      hunks.push(parsedHunk.hunk), i = parsedHunk.nextIndex;
+      continue;
+    }
+    if (!sawGitSignal)
+      throw Error(`Unexpected patch line: ${line}`);
+    break;
+  }
+  if (!sawGitSignal)
+    throw Error("patch did not contain any operations");
+  return {
+    operation: buildGitOperation(renameFrom ?? oldPath, renameTo ?? newPath, hunks),
+    nextIndex: i
+  };
+}
+function parseUnifiedHunk(lines, startIndex, endIndex) {
+  let i = startIndex, headerText = stripUnifiedDiffHeader(lines[i].trim()), header = headerText === "" ? null : headerText;
+  i += 1;
+  let hunkLines = [], isEndOfFile = !1;
+  while (i < endIndex) {
+    let line = lines[i], trimmed = line.trimStart();
+    if (trimmed.startsWith(DIFF_GIT_PREFIX) || line.startsWith("--- ") || line.startsWith("+++ ") || isHunkHeaderLine(line))
+      break;
+    if (trimmed === NO_NEWLINE_MARKER) {
+      i += 1;
+      continue;
+    }
+    if (line === END_OF_FILE) {
+      isEndOfFile = !0, i += 1;
+      break;
+    }
+    if (line === "") {
+      hunkLines.push({ prefix: " ", text: "" }), i += 1;
+      continue;
+    }
+    if (![" ", "+", "-"].includes(line[0])) {
+      if (hunkLines.length === 0)
+        throw Error("Hunk lines must start with space, +, or -");
+      break;
+    }
+    hunkLines.push({
+      prefix: line[0],
+      text: line.slice(1)
+    }), i += 1;
+  }
+  if (hunkLines.length === 0)
+    throw Error("Empty hunk in Update File");
+  return {
+    hunk: { header, lines: hunkLines, isEndOfFile },
+    nextIndex: i
+  };
+}
+function buildGitOperation(sourcePath, targetPath, hunks) {
+  if (!sourcePath && !targetPath)
+    throw Error("Could not determine file path from git diff");
+  if (!sourcePath) {
+    if (!targetPath)
+      throw Error("Could not determine file path from git diff");
+    ensureSafePatchPath(targetPath, "Add File");
+    let content = hunks.length === 0 ? "" : applyHunks("", hunks);
+    return { type: "add", path: targetPath, content };
+  }
+  if (!targetPath)
+    return ensureSafePatchPath(sourcePath, "Delete File"), { type: "delete", path: sourcePath };
+  return ensureSafePatchPath(sourcePath, "Update File"), ensureSafePatchPath(targetPath, "Move to"), {
+    type: "update",
+    path: sourcePath,
+    moveTo: sourcePath === targetPath ? null : targetPath,
+    hunks
+  };
+}
+function looksLikeGitDiff(lines, startIndex, endIndex) {
+  let hasFileMarkers = !1;
+  for (let i = startIndex;i < endIndex; i += 1) {
+    let line = lines[i], trimmed = line.trimStart();
+    if (trimmed.startsWith(DIFF_GIT_PREFIX))
+      return !0;
+    if (line.startsWith("--- ") || line.startsWith("+++ ")) {
+      hasFileMarkers = !0;
+      continue;
+    }
+    if (trimmed.startsWith("rename from ") || trimmed.startsWith("rename to "))
+      return !0;
+  }
+  return hasFileMarkers;
+}
+function parseDiffGitHeaderPaths(trimmed) {
+  let payload = trimmed.slice(DIFF_GIT_PREFIX.length).trim();
+  if (!payload)
+    return null;
+  let tokens = payload.split(/\s+/, 3);
+  if (tokens.length < 2)
+    return null;
+  return {
+    oldPath: normalizeGitMarkerPath(tokens[0]),
+    newPath: normalizeGitMarkerPath(tokens[1])
+  };
+}
+function parseGitMarkerPath(rawValue) {
+  let marker = rawValue.split("\t", 1)[0].trim();
+  return normalizeGitMarkerPath(marker);
+}
+function parseGitRenamePath(rawValue) {
+  let value = unquoteGitPath(rawValue.trim());
+  if (!value)
+    throw Error("Could not determine file path from git diff");
+  return value;
+}
+function normalizeGitMarkerPath(rawValue) {
+  let value = unquoteGitPath(rawValue.trim());
+  if (value === "/dev/null")
+    return null;
+  if (value.startsWith("a/") || value.startsWith("b/"))
+    return value.slice(2);
+  return value;
+}
+function unquoteGitPath(rawValue) {
+  if (rawValue.length < 2 || rawValue[0] !== '"' || rawValue[rawValue.length - 1] !== '"')
+    return rawValue;
+  return rawValue.slice(1, -1).replace(/\\\\/g, "\\").replace(/\\"/g, '"');
+}
+function isGitMetadataLine(trimmed) {
+  return trimmed.startsWith("index ") || trimmed.startsWith("old mode ") || trimmed.startsWith("new mode ") || trimmed.startsWith("new file mode ") || trimmed.startsWith("deleted file mode ") || trimmed.startsWith("similarity index ") || trimmed.startsWith("dissimilarity index ");
+}
+function isPrefixedDiffLine(line) {
+  return line !== "" && [" ", "+", "-"].includes(line[0]);
+}
+function isStrictPairBlockStart(line) {
+  if (isPatchHeaderLine(line) || isHunkHeaderLine(line))
+    return !1;
+  return !isPrefixedDiffLine(line);
 }
 function ensureSafePatchPath(rawPath, label) {
   if (/[\u0000-\u001F\u007F]/.test(rawPath))
@@ -23017,38 +23363,6 @@ function findSequence(haystack, needle, startIndex = 0, preferEnd = !1) {
   if (index = searchWith((a, b) => a.trim() === b.trim()), index >= 0)
     return index;
   return searchWith((a, b) => normalizeForMatch(a) === normalizeForMatch(b));
-}
-
-// proxy-tools/handlers/edit.ts
-import path4 from "path";
-async function handleEditTool(args, projectPath, callUpstreamTool) {
-  let filePath = requireString(args.file_path, "file_path"), oldString = normalizeLineEndings(requireString(args.old_string, "old_string")), newString = typeof args.new_string === "string" ? normalizeLineEndings(args.new_string) : null;
-  if (newString === null)
-    throw Error("new_string must be a string");
-  if (oldString === newString)
-    throw Error("old_string and new_string must differ");
-  let replaceAllFlag = Boolean(args.replace_all ?? !1), { relative } = resolvePathInProject(projectPath, filePath, "file_path"), originalRaw = await readFileText(relative, { truncateMode: "NONE" }, callUpstreamTool);
-  if (isTruncatedText(originalRaw))
-    throw Error("file content truncated while reading");
-  let original = normalizeLineEndings(originalRaw), updated;
-  if (replaceAllFlag) {
-    let parts = original.split(oldString);
-    if (parts.length === 1)
-      throw Error("old_string not found");
-    updated = parts.join(newString);
-  } else {
-    let firstIndex = original.indexOf(oldString);
-    if (firstIndex === -1)
-      throw Error("old_string not found");
-    if (original.indexOf(oldString, firstIndex + oldString.length) !== -1)
-      throw Error("old_string must be unique or replace_all must be true");
-    updated = `${original.slice(0, firstIndex)}${newString}${original.slice(firstIndex + oldString.length)}`;
-  }
-  return await callUpstreamTool("create_new_file", {
-    pathInProject: relative,
-    text: updated,
-    overwrite: !0
-  }), `Updated ${path4.resolve(projectPath, relative)}`;
 }
 
 // proxy-tools/handlers/list-dir.ts
@@ -23485,7 +23799,7 @@ function isTruncationError(error48) {
 }
 
 // proxy-tools/handlers/rename.ts
-import path5 from "path";
+import path4 from "path";
 async function handleRenameTool(args, projectPath, callUpstreamTool) {
   let toolArgs = args ?? {}, filePath = requireString(toolArgs.pathInProject, "pathInProject"), symbolName = requireString(toolArgs.symbolName, "symbolName"), newName = requireString(toolArgs.newName, "newName"), { relative } = resolvePathInProject(projectPath, filePath, "pathInProject"), result = await callUpstreamTool("rename_refactoring", {
     pathInProject: relative,
@@ -23494,11 +23808,11 @@ async function handleRenameTool(args, projectPath, callUpstreamTool) {
   }), message = extractTextFromResult(result);
   if (message)
     return message;
-  return `Renamed ${symbolName} to ${newName} in ${path5.resolve(projectPath, relative)}`;
+  return `Renamed ${symbolName} to ${newName} in ${path4.resolve(projectPath, relative)}`;
 }
 
 // proxy-tools/handlers/search-shared.ts
-import path6 from "path";
+import path5 from "path";
 
 // proxy-tools/handlers/search-constants.ts
 var DEFAULT_MAX_RESULTS = 1000, MAX_RESULTS_UPPER_BOUND = 5000, SEARCH_SCOPE_MULTIPLIER = 5;
@@ -23585,13 +23899,13 @@ function resolveMoreFlag(result, itemCount, maxResults) {
 function normalizeProjectRelativePath(projectPath, filePath) {
   if (!filePath)
     return "";
-  if (path6.isAbsolute(filePath)) {
-    let relative = path6.relative(projectPath, filePath);
-    if (!relative.startsWith("..") && !path6.isAbsolute(relative))
+  if (path5.isAbsolute(filePath)) {
+    let relative = path5.relative(projectPath, filePath);
+    if (!relative.startsWith("..") && !path5.isAbsolute(relative))
       return toPosixPath(relative);
-    return path6.normalize(filePath);
+    return path5.normalize(filePath);
   }
-  return toPosixPath(path6.normalize(filePath));
+  return toPosixPath(path5.normalize(filePath));
 }
 function toPosixPath(value) {
   return value.replace(/\\/g, "/");
@@ -23599,7 +23913,7 @@ function toPosixPath(value) {
 
 // proxy-tools/handlers/search-scope.ts
 var import_picomatch = __toESM(require_picomatch2(), 1);
-import path7 from "path";
+import path6 from "path";
 import { statSync } from "fs";
 function buildPathScope(projectPath, rawPaths) {
   if (rawPaths === void 0 || rawPaths === null)
@@ -23656,7 +23970,7 @@ function resolveSearchRoot(projectPath, scope, globPattern) {
   for (let candidate of candidates) {
     if (!candidate)
       continue;
-    let absolute = path7.resolve(projectPath, candidate);
+    let absolute = path6.resolve(projectPath, candidate);
     if (isDirectory(absolute))
       return candidate;
   }
@@ -23671,7 +23985,7 @@ function filterEntriesByScope(entries, projectPath, scope) {
   });
 }
 function filterEntriesByDirectory(entries, projectPath, directoryToSearch) {
-  let absoluteDir = path7.resolve(projectPath, directoryToSearch);
+  let absoluteDir = path6.resolve(projectPath, directoryToSearch);
   return entries.filter((entry) => {
     let absolutePath = resolveAbsolutePath(projectPath, entry.filePath);
     return absolutePath ? isWithinDirectory(absolutePath, absoluteDir) : !1;
@@ -23708,10 +24022,10 @@ function normalizePathPattern(pattern, projectPath, originalPattern) {
       throw Error(`Specified path '${originalPattern}' points outside the project directory`);
     return pattern;
   }
-  let absolutePrefix = path7.isAbsolute(prefixTrimmed) ? path7.normalize(prefixTrimmed) : path7.resolve(projectPath, prefixTrimmed);
+  let absolutePrefix = path6.isAbsolute(prefixTrimmed) ? path6.normalize(prefixTrimmed) : path6.resolve(projectPath, prefixTrimmed);
   if (!isWithinProject(projectPath, absolutePrefix))
     throw Error(`Specified path '${originalPattern}' points outside the project directory`);
-  let relativePrefix = toPosixPath2(path7.relative(projectPath, absolutePrefix)), suffix = pattern.slice(prefix.length).replace(/^\/+/, "");
+  let relativePrefix = toPosixPath2(path6.relative(projectPath, absolutePrefix)), suffix = pattern.slice(prefix.length).replace(/^\/+/, "");
   if (relativePrefix === "")
     return suffix;
   if (suffix === "")
@@ -23746,7 +24060,7 @@ function computeCommonDirectory(patterns) {
   }
   if (common.length === 0)
     return null;
-  return path7.normalize(common.join("/"));
+  return path6.normalize(common.join("/"));
 }
 function extractDirectoryPrefix(pattern) {
   let globIndex = indexOfGlobChar(pattern), trimmed = (globIndex < 0 ? pattern : pattern.slice(0, globIndex)).replace(/\/+$/, "");
@@ -23762,7 +24076,7 @@ function extractDirectoryPrefix(pattern) {
   return trimmed;
 }
 function createMatcher(pattern) {
-  let nocase = path7.sep === "\\", matcher = import_picomatch.default(pattern, { dot: !0, nocase });
+  let nocase = path6.sep === "\\", matcher = import_picomatch.default(pattern, { dot: !0, nocase });
   return (candidate) => matcher(candidate);
 }
 function isDirectory(candidatePath) {
@@ -23776,8 +24090,8 @@ function resolveRelativePath(projectPath, filePath) {
   let absolute = resolveAbsolutePath(projectPath, filePath);
   if (!absolute)
     return null;
-  let relative = path7.relative(projectPath, absolute);
-  if (relative.startsWith("..") || path7.isAbsolute(relative))
+  let relative = path6.relative(projectPath, absolute);
+  if (relative.startsWith("..") || path6.isAbsolute(relative))
     return null;
   return toPosixPath2(relative);
 }
@@ -23785,7 +24099,7 @@ function resolveAbsolutePath(projectPath, filePath) {
   let resolved = normalizeEntryPath(projectPath, filePath);
   if (typeof resolved !== "string" || resolved === "")
     return null;
-  return path7.normalize(resolved);
+  return path6.normalize(resolved);
 }
 function matchesScope(scope, relativePosix) {
   if (!scope.includeMatchers.some((matcher) => matcher(relativePosix)))
@@ -23793,12 +24107,12 @@ function matchesScope(scope, relativePosix) {
   return scope.excludeMatchers.every((matcher) => !matcher(relativePosix));
 }
 function isWithinProject(projectPath, candidatePath) {
-  let relative = path7.relative(projectPath, candidatePath);
-  return relative === "" || !relative.startsWith("..") && !path7.isAbsolute(relative);
+  let relative = path6.relative(projectPath, candidatePath);
+  return relative === "" || !relative.startsWith("..") && !path6.isAbsolute(relative);
 }
 function isWithinDirectory(filePath, directoryPath) {
-  let relative = path7.relative(directoryPath, filePath);
-  return relative === "" || !relative.startsWith("..") && !path7.isAbsolute(relative);
+  let relative = path6.relative(directoryPath, filePath);
+  return relative === "" || !relative.startsWith("..") && !path6.isAbsolute(relative);
 }
 function toPosixPath2(value) {
   return value.replace(/\\/g, "/");
@@ -23914,20 +24228,6 @@ async function handleSearchSymbolTool(args, projectPath, callUpstreamTool, capab
   }
   throw Error("symbol search is not supported by this IDE version");
 }
-// proxy-tools/handlers/write.ts
-import path8 from "path";
-async function handleWriteTool(args, projectPath, callUpstreamTool) {
-  let filePath = requireString(args.file_path, "file_path"), content = typeof args.content === "string" ? args.content : null;
-  if (content === null)
-    throw Error("content must be a string");
-  let { relative } = resolvePathInProject(projectPath, filePath, "file_path"), normalizedContent = normalizeLineEndings(content);
-  return await callUpstreamTool("create_new_file", {
-    pathInProject: relative,
-    text: normalizedContent,
-    overwrite: !0
-  }), `Wrote ${path8.resolve(projectPath, relative)}`;
-}
-
 // proxy-tools/schemas.ts
 function objectSchema(properties, required2) {
   return {
@@ -23979,38 +24279,6 @@ function createReadSchema(includeIndentation) {
       }
     }, []);
   return objectSchema(properties, ["file_path"]);
-}
-function createWriteSchema() {
-  return objectSchema({
-    file_path: {
-      type: "string",
-      description: "Absolute or project-relative path to the file."
-    },
-    content: {
-      type: "string",
-      description: "The contents to write to the file."
-    }
-  }, ["file_path", "content"]);
-}
-function createEditSchema() {
-  return objectSchema({
-    file_path: {
-      type: "string",
-      description: "Absolute or project-relative path to the file."
-    },
-    old_string: {
-      type: "string",
-      description: "Text to replace."
-    },
-    new_string: {
-      type: "string",
-      description: "Replacement text."
-    },
-    replace_all: {
-      type: "boolean",
-      description: "When true, replace all occurrences. Otherwise replace only the first."
-    }
-  }, ["file_path", "old_string", "new_string"]);
 }
 function createListDirSchema() {
   return objectSchema({
@@ -24074,7 +24342,7 @@ function createApplyPatchSchema() {
   return objectSchema({
     input: {
       type: "string",
-      description: "Patch text in the apply_patch format, including Begin/End markers."
+      description: "Patch text in the apply_patch format or unified git diff format."
     }
   }, ["input"]);
 }
@@ -24096,14 +24364,12 @@ function createRenameSchema() {
 }
 
 // proxy-tools/registry.ts
-var TOOL_MODES = {
-  CODEX: "codex",
-  CC: "cc"
-}, BLOCKED_TOOL_NAMES = /* @__PURE__ */ new Set(["create_new_file", "execute_terminal_command"]), EXTRA_REPLACED_TOOL_NAMES = [
+var BLOCKED_TOOL_NAMES = /* @__PURE__ */ new Set(["create_new_file", "execute_terminal_command"]), EXTRA_REPLACED_TOOL_NAMES = [
   "search_in_files_by_text",
   "search_in_files_by_regex",
   "find_files_by_glob",
   "find_files_by_name_keyword",
+  "replace_text_in_file",
   "search",
   "execute_terminal_command"
 ], RENAME_TOOL_DESCRIPTION = "Rename a symbol (class/function/variable/etc.) using IDE refactoring. Updates all references across the project; do not use edit/apply_patch for renames.";
@@ -24126,7 +24392,6 @@ function buildToolSpec(name, description, inputSchema, context) {
 }
 var TOOL_VARIANTS = [
   {
-    mode: TOOL_MODES.CODEX,
     name: "read_file",
     description: "Reads a local file with 1-indexed line numbers, supporting slice and indentation-aware block modes.",
     schemaFactory: () => createReadSchema(!0),
@@ -24135,15 +24400,6 @@ var TOOL_VARIANTS = [
     expose: ({ readCapabilities }) => !readCapabilities.hasReadFile
   },
   {
-    mode: TOOL_MODES.CC,
-    name: "read",
-    description: "Read a local file using absolute or project-relative paths. Returns raw text.",
-    schemaFactory: () => createReadSchema(!1),
-    handlerFactory: ({ projectPath, callUpstreamTool, readCapabilities }) => (args) => handleReadTool(args, projectPath, callUpstreamTool, readCapabilities, { format: "raw" }),
-    upstreamNames: ["get_file_text_by_path"]
-  },
-  {
-    mode: TOOL_MODES.CODEX,
     name: "search_text",
     description: "Search for a text substring in project files.",
     schemaFactory: () => createSearchTextSchema(),
@@ -24152,16 +24408,6 @@ var TOOL_VARIANTS = [
     expose: ({ searchCapabilities }) => !searchCapabilities.hasSearchText && searchCapabilities.supportsText
   },
   {
-    mode: TOOL_MODES.CC,
-    name: "search_text",
-    description: "Search for a text substring in project files.",
-    schemaFactory: () => createSearchTextSchema(),
-    handlerFactory: ({ projectPath, callUpstreamTool, searchCapabilities }) => (args) => handleSearchTextTool(args, projectPath, callUpstreamTool, searchCapabilities),
-    upstreamNames: ["search_text"],
-    expose: ({ searchCapabilities }) => !searchCapabilities.hasSearchText && searchCapabilities.supportsText
-  },
-  {
-    mode: TOOL_MODES.CODEX,
     name: "search_regex",
     description: "Search for a regular expression in project files.",
     schemaFactory: () => createSearchRegexSchema(),
@@ -24170,16 +24416,6 @@ var TOOL_VARIANTS = [
     expose: ({ searchCapabilities }) => !searchCapabilities.hasSearchRegex && searchCapabilities.supportsRegex
   },
   {
-    mode: TOOL_MODES.CC,
-    name: "search_regex",
-    description: "Search for a regular expression in project files.",
-    schemaFactory: () => createSearchRegexSchema(),
-    handlerFactory: ({ projectPath, callUpstreamTool, searchCapabilities }) => (args) => handleSearchRegexTool(args, projectPath, callUpstreamTool, searchCapabilities),
-    upstreamNames: ["search_regex"],
-    expose: ({ searchCapabilities }) => !searchCapabilities.hasSearchRegex && searchCapabilities.supportsRegex
-  },
-  {
-    mode: TOOL_MODES.CODEX,
     name: "search_file",
     description: "Search for files using a glob pattern.",
     schemaFactory: () => createSearchFileSchema(),
@@ -24188,16 +24424,6 @@ var TOOL_VARIANTS = [
     expose: ({ searchCapabilities }) => !searchCapabilities.hasSearchFile && searchCapabilities.supportsFile
   },
   {
-    mode: TOOL_MODES.CC,
-    name: "search_file",
-    description: "Search for files using a glob pattern.",
-    schemaFactory: () => createSearchFileSchema(),
-    handlerFactory: ({ projectPath, callUpstreamTool, searchCapabilities }) => (args) => handleSearchFileTool(args, projectPath, callUpstreamTool, searchCapabilities),
-    upstreamNames: ["search_file"],
-    expose: ({ searchCapabilities }) => !searchCapabilities.hasSearchFile && searchCapabilities.supportsFile
-  },
-  {
-    mode: TOOL_MODES.CODEX,
     name: "search_symbol",
     description: "Search for symbols (classes, methods, fields) by name.",
     schemaFactory: () => createSearchSymbolSchema(),
@@ -24206,16 +24432,6 @@ var TOOL_VARIANTS = [
     expose: ({ searchCapabilities }) => !searchCapabilities.hasSearchSymbol && searchCapabilities.supportsSymbol
   },
   {
-    mode: TOOL_MODES.CC,
-    name: "search_symbol",
-    description: "Search for symbols (classes, methods, fields) by name.",
-    schemaFactory: () => createSearchSymbolSchema(),
-    handlerFactory: ({ projectPath, callUpstreamTool, searchCapabilities }) => (args) => handleSearchSymbolTool(args, projectPath, callUpstreamTool, searchCapabilities),
-    upstreamNames: ["search_symbol"],
-    expose: ({ searchCapabilities }) => !searchCapabilities.hasSearchSymbol && searchCapabilities.supportsSymbol
-  },
-  {
-    mode: TOOL_MODES.CODEX,
     name: "list_dir",
     description: "Lists entries in a local directory with 1-indexed entry numbers and simple type labels.",
     schemaFactory: () => createListDirSchema(),
@@ -24223,40 +24439,14 @@ var TOOL_VARIANTS = [
     upstreamNames: ["list_directory_tree"]
   },
   {
-    mode: TOOL_MODES.CODEX,
     name: "apply_patch",
-    description: "Apply a patch using the Codex apply_patch format.",
+    description: "Apply a patch using the Codex apply_patch format or unified git diff format.",
     schemaFactory: () => createApplyPatchSchema(),
     handlerFactory: ({ projectPath, callUpstreamTool }) => (args) => handleApplyPatchTool(args, projectPath, callUpstreamTool),
     upstreamNames: ["get_file_text_by_path"],
     expose: ({ readCapabilities }) => !readCapabilities.hasApplyPatch
   },
   {
-    mode: TOOL_MODES.CC,
-    name: "write",
-    description: "Write a local file using an absolute or project-relative path.",
-    schemaFactory: () => createWriteSchema(),
-    handlerFactory: ({ projectPath, callUpstreamTool }) => (args) => handleWriteTool(args, projectPath, callUpstreamTool),
-    upstreamNames: ["create_new_file"]
-  },
-  {
-    mode: TOOL_MODES.CC,
-    name: "edit",
-    description: "Replace text in a local file. Fails if the target string is missing.",
-    schemaFactory: () => createEditSchema(),
-    handlerFactory: ({ projectPath, callUpstreamTool }) => (args) => handleEditTool(args, projectPath, callUpstreamTool),
-    upstreamNames: ["replace_text_in_file"]
-  },
-  {
-    mode: TOOL_MODES.CODEX,
-    name: "rename",
-    description: RENAME_TOOL_DESCRIPTION,
-    schemaFactory: () => createRenameSchema(),
-    handlerFactory: ({ projectPath, callUpstreamTool }) => (args) => handleRenameTool(args, projectPath, callUpstreamTool),
-    upstreamNames: ["rename_refactoring"]
-  },
-  {
-    mode: TOOL_MODES.CC,
     name: "rename",
     description: RENAME_TOOL_DESCRIPTION,
     schemaFactory: () => createRenameSchema(),
@@ -24264,14 +24454,11 @@ var TOOL_VARIANTS = [
     upstreamNames: ["rename_refactoring"]
   }
 ];
-function getProxyToolVariants(mode) {
-  return TOOL_VARIANTS.filter((tool) => tool.mode === mode);
-}
 function isExposedVariant(tool, context) {
   return resolveToolExpose(tool.expose, context);
 }
-function buildProxyToolingData(mode, context) {
-  let variants = getProxyToolVariants(mode).filter((tool) => isExposedVariant(tool, context)), handlers = /* @__PURE__ */ new Map;
+function buildProxyToolingData(context) {
+  let variants = TOOL_VARIANTS.filter((tool) => isExposedVariant(tool, context)), handlers = /* @__PURE__ */ new Map;
   for (let tool of variants)
     handlers.set(tool.name, tool.handlerFactory(context));
   return {
@@ -24295,19 +24482,6 @@ function getReplacedToolNames() {
 }
 
 // proxy-tools/tooling.ts
-function resolveToolMode(rawValue) {
-  if (rawValue === void 0 || rawValue === null || rawValue === "")
-    return { mode: TOOL_MODES.CODEX };
-  let normalized = String(rawValue).trim().toLowerCase();
-  if (normalized === "" || normalized === TOOL_MODES.CODEX)
-    return { mode: TOOL_MODES.CODEX };
-  if (normalized === TOOL_MODES.CC || normalized === "claude" || normalized === "claude-code" || normalized === "claude_code")
-    return { mode: TOOL_MODES.CC };
-  return {
-    mode: TOOL_MODES.CODEX,
-    warning: `Unknown JETBRAINS_MCP_TOOL_MODE '${rawValue}', defaulting to codex.`
-  };
-}
 var DISABLE_NEW_SEARCH_ENV = "JETBRAINS_MCP_PROXY_DISABLE_NEW_SEARCH";
 function isEnvFlagEnabled(name) {
   let raw = process.env[name];
@@ -24352,11 +24526,10 @@ function resolveReadCapabilities(upstreamTools) {
 function createProxyTooling({
   projectPath,
   callUpstreamTool,
-  toolMode,
   searchCapabilities,
   readCapabilities
 }) {
-  let resolvedMode = toolMode === TOOL_MODES.CC ? TOOL_MODES.CC : TOOL_MODES.CODEX, { proxyToolSpecs, proxyToolNames, handlers } = buildProxyToolingData(resolvedMode, {
+  let { proxyToolSpecs, proxyToolNames, handlers } = buildProxyToolingData({
     projectPath,
     callUpstreamTool,
     searchCapabilities,
@@ -24368,7 +24541,7 @@ function createProxyTooling({
       throw Error(`Unknown tool: ${toolName}`);
     return await handler(args);
   }
-  return { proxyToolSpecs, proxyToolNames, runProxyToolCall, toolMode: resolvedMode };
+  return { proxyToolSpecs, proxyToolNames, runProxyToolCall };
 }
 
 // ij-mcp-proxy.ts
@@ -24399,26 +24572,23 @@ function buildStreamUrl(port) {
 }
 function resolveProjectPath(rawValue) {
   if (!rawValue)
-    return { projectPath: path9.resolve(cwd()) };
+    return { projectPath: path7.resolve(cwd()) };
   if (rawValue.startsWith("file://"))
     try {
-      return { projectPath: path9.resolve(fileURLToPath(new URL(rawValue))) };
+      return { projectPath: path7.resolve(fileURLToPath(new URL(rawValue))) };
     } catch (error48) {
       let message = error48 instanceof Error ? error48.message : String(error48);
       return {
-        projectPath: path9.resolve(rawValue),
+        projectPath: path7.resolve(rawValue),
         warning: `Failed to parse JETBRAINS_MCP_PROJECT_PATH as a file URI (${message}); falling back to path resolution.`
       };
     }
-  return { projectPath: path9.resolve(rawValue) };
+  return { projectPath: path7.resolve(rawValue) };
 }
-var explicitProjectPath = env.JETBRAINS_MCP_PROJECT_PATH, projectPathResolution = resolveProjectPath(explicitProjectPath), projectPath = projectPathResolution.projectPath, defaultProjectPathKey = "project_path", projectPathManager = createProjectPathManager({ projectPath, defaultProjectPathKey }), toolModeInfo = resolveToolMode(env.JETBRAINS_MCP_TOOL_MODE), REPLACED_TOOL_NAMES = getReplacedToolNames(), BASE_BLOCKED_TOOL_NAMES = /* @__PURE__ */ new Set([...BLOCKED_TOOL_NAMES, ...REPLACED_TOOL_NAMES]), searchCapabilities = resolveSearchCapabilities([]).capabilities, readCapabilities = resolveReadCapabilities([]).capabilities;
+var explicitProjectPath = env.JETBRAINS_MCP_PROJECT_PATH, projectPathResolution = resolveProjectPath(explicitProjectPath), projectPath = projectPathResolution.projectPath, defaultProjectPathKey = "project_path", projectPathManager = createProjectPathManager({ projectPath, defaultProjectPathKey }), REPLACED_TOOL_NAMES = getReplacedToolNames(), BASE_BLOCKED_TOOL_NAMES = /* @__PURE__ */ new Set([...BLOCKED_TOOL_NAMES, ...REPLACED_TOOL_NAMES]), searchCapabilities = resolveSearchCapabilities([]).capabilities, readCapabilities = resolveReadCapabilities([]).capabilities;
 function blockedToolMessage(toolName) {
-  if (toolName === "create_new_file") {
-    if (toolModeInfo.mode === TOOL_MODES.CC)
-      return `Tool '${toolName}' is not exposed by ij-proxy. Use 'write' instead.`;
+  if (toolName === "create_new_file")
     return `Tool '${toolName}' is not exposed by ij-proxy. Use 'apply_patch' instead.`;
-  }
   return `Tool '${toolName}' is not exposed by ij-proxy.`;
 }
 var proxyToolSpecs = [], proxyToolNames = /* @__PURE__ */ new Set, runProxyToolCall = async () => {
@@ -24428,7 +24598,6 @@ function updateProxyTooling() {
   let tooling = createProxyTooling({
     projectPath,
     callUpstreamTool,
-    toolMode: toolModeInfo.mode,
     searchCapabilities,
     readCapabilities
   });
@@ -24444,8 +24613,6 @@ function warn(message) {
 clearLogFile();
 if (projectPathResolution.warning)
   warn(projectPathResolution.warning);
-if (toolModeInfo.warning)
-  warn(toolModeInfo.warning);
 var streamTransport = createStreamTransport({
   explicitUrl: explicitMcpUrl,
   preferredPorts,

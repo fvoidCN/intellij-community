@@ -1,6 +1,8 @@
 package com.intellij.agent.workbench.chat
 
 import com.intellij.agent.workbench.common.AgentThreadActivity
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessageDispatchPlan
+import com.intellij.agent.workbench.sessions.core.providers.AgentSessionTerminalLaunchSpec
 import com.intellij.openapi.application.UiWithModelAccess
 import com.intellij.openapi.components.service
 import com.intellij.openapi.extensions.LoadingOrder
@@ -13,19 +15,22 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.testFramework.common.timeoutRunBlocking
 import com.intellij.testFramework.junit5.TestApplication
 import com.intellij.testFramework.junit5.fixture.fileEditorManagerFixture
 import com.intellij.testFramework.junit5.fixture.projectFixture
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.assertj.core.api.Assertions.assertThat
-import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 @TestApplication
 class AgentChatEditorServiceTest {
@@ -46,13 +51,6 @@ class AgentChatEditorServiceTest {
         LoadingOrder.FIRST,
         project,
       )
-    }
-  }
-
-  @AfterEach
-  fun tearDown(): Unit = timeoutRunBlocking {
-    runInUi {
-      (VirtualFileManager.getInstance().getFileSystem(AGENT_CHAT_PROTOCOL) as? AgentChatVirtualFileSystem)?.clearFilesForTests()
     }
   }
 
@@ -83,6 +81,7 @@ class AgentChatEditorServiceTest {
       threadIdentity = "CODEX:thread-startup-1",
       shellCommand = codexCommand,
       startupShellCommandOverride = listOf("codex", "--", "-draft prompt\nsecond line"),
+      startupShellEnvOverride = mapOf("DISABLE_AUTOUPDATER" to "1"),
       threadId = "thread-startup-1",
       threadTitle = "Startup prompt thread",
       subAgentId = null,
@@ -95,6 +94,35 @@ class AgentChatEditorServiceTest {
     assertThat(file.initialComposedMessage).isNull()
     assertThat(file.initialMessageToken).isNull()
     assertThat(file.initialMessageSent).isFalse()
+  }
+
+  @Test
+  fun testNewTabStartupLaunchSpecOverrideMergesEnvAndFallsBackToBase(): Unit = timeoutRunBlocking {
+    val baseEnv = mapOf("PATH" to "/usr/local/bin", "TERM" to "xterm-256color")
+    val startupEnv = mapOf("PATH" to "/custom/bin", "DISABLE_AUTOUPDATER" to "1")
+    openChatInModal(
+      threadIdentity = "CODEX:thread-startup-env",
+      shellCommand = codexCommand,
+      shellEnvVariables = baseEnv,
+      startupShellCommandOverride = listOf("codex", "--", "-draft with env"),
+      startupShellEnvOverride = startupEnv,
+      threadId = "thread-startup-env",
+      threadTitle = "Startup env thread",
+      subAgentId = null,
+    )
+
+    val file = openedChatFiles().single()
+    assertThat(file.shellCommand).containsExactlyElementsOf(codexCommand)
+    assertThat(file.shellEnvVariables).containsExactlyEntriesOf(baseEnv)
+
+    val startupLaunchSpec = file.consumeStartupLaunchSpec()
+    assertThat(startupLaunchSpec.command).containsExactly("codex", "--", "-draft with env")
+    assertThat(startupLaunchSpec.envVariables)
+      .containsExactlyEntriesOf(mapOf("PATH" to "/custom/bin", "TERM" to "xterm-256color", "DISABLE_AUTOUPDATER" to "1"))
+
+    val fallbackLaunchSpec = file.consumeStartupLaunchSpec()
+    assertThat(fallbackLaunchSpec.command).containsExactlyElementsOf(codexCommand)
+    assertThat(fallbackLaunchSpec.envVariables).containsExactlyEntriesOf(baseEnv)
   }
 
   @Test
@@ -111,6 +139,7 @@ class AgentChatEditorServiceTest {
       threadIdentity = "CODEX:thread-existing-startup",
       shellCommand = codexCommand,
       startupShellCommandOverride = listOf("codex", "--", "Should be ignored for open tab"),
+      startupShellEnvOverride = mapOf("DISABLE_AUTOUPDATER" to "1"),
       threadId = "thread-existing-startup",
       threadTitle = "Existing thread",
       subAgentId = null,
@@ -296,7 +325,7 @@ class AgentChatEditorServiceTest {
           AgentChatPendingCodexTabRebindRequest(
             pendingTabKey = file.tabKey,
             pendingThreadIdentity = file.threadIdentity,
-            target = AgentChatPendingTabRebindTarget(
+            target = AgentChatTabRebindTarget(
               threadIdentity = "CODEX:thread-3",
               threadId = "thread-3",
               shellCommand = listOf("codex", "resume", "thread-3"),
@@ -374,6 +403,164 @@ class AgentChatEditorServiceTest {
   }
 
   @Test
+  fun testCollectOpenConcreteCodexTabsAwaitingNewThreadRebindByPath(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:thread-42",
+      shellCommand = listOf("codex", "resume", "thread-42"),
+      threadId = "thread-42",
+      threadTitle = "Concrete thread",
+      subAgentId = null,
+    )
+
+    val concreteFile = openedChatFiles().single()
+    concreteFile.updateNewThreadRebindRequestedAtMs(1_000L)
+    service<AgentChatTabsService>().upsert(concreteFile.toSnapshot())
+
+    val concreteTabsByPath = collectOpenConcreteCodexTabsAwaitingNewThreadRebindByPath()
+    val concreteSnapshot = concreteTabsByPath[projectPath].orEmpty().single()
+    assertThat(concreteSnapshot.projectPath).isEqualTo(projectPath)
+    assertThat(concreteSnapshot.tabKey).isEqualTo(concreteFile.tabKey)
+    assertThat(concreteSnapshot.currentThreadIdentity).isEqualTo("CODEX:thread-42")
+    assertThat(concreteSnapshot.newThreadRebindRequestedAtMs).isEqualTo(1_000L)
+  }
+
+  @Test
+  fun testRebindOpenConcreteCodexTabToNewThread(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:thread-1",
+      shellCommand = listOf("codex", "resume", "thread-1"),
+      threadId = "thread-1",
+      threadTitle = "Original thread",
+      subAgentId = null,
+    )
+
+    val file = openedChatFiles().single()
+    file.updateNewThreadRebindRequestedAtMs(1_000L)
+    service<AgentChatTabsService>().upsert(file.toSnapshot())
+
+    val rebindReport = rebindOpenConcreteCodexTabs(
+      requestsByProjectPath = mapOf(
+        projectPath to listOf(
+          AgentChatConcreteCodexTabRebindRequest(
+            tabKey = file.tabKey,
+            currentThreadIdentity = file.threadIdentity,
+            newThreadRebindRequestedAtMs = 1_000L,
+            target = AgentChatTabRebindTarget(
+              threadIdentity = "CODEX:thread-2",
+              threadId = "thread-2",
+              shellCommand = listOf("codex", "resume", "thread-2"),
+              threadTitle = "New thread",
+              threadActivity = AgentThreadActivity.UNREAD,
+            ),
+          )
+        )
+      )
+    )
+
+    assertThat(rebindReport.requestedBindings).isEqualTo(1)
+    assertThat(rebindReport.reboundBindings).isEqualTo(1)
+    assertThat(rebindReport.outcomesByPath[projectPath].orEmpty().single().status)
+      .isEqualTo(AgentChatConcreteCodexTabRebindStatus.REBOUND)
+    assertThat(file.threadIdentity).isEqualTo("CODEX:thread-2")
+    assertThat(file.threadId).isEqualTo("thread-2")
+    assertThat(file.shellCommand).containsExactly("codex", "resume", "thread-2")
+    assertThat(file.threadTitle).isEqualTo("New thread")
+    assertThat(file.threadActivity).isEqualTo(AgentThreadActivity.UNREAD)
+    assertThat(file.newThreadRebindRequestedAtMs).isNull()
+  }
+
+  @Test
+  fun testRebindOpenConcreteCodexTabsFailsWhenTargetIsAlreadyOpen(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:thread-1",
+      shellCommand = listOf("codex", "resume", "thread-1"),
+      threadId = "thread-1",
+      threadTitle = "Original thread",
+      subAgentId = null,
+    )
+    openChatInModal(
+      threadIdentity = "CODEX:thread-2",
+      shellCommand = listOf("codex", "resume", "thread-2"),
+      threadId = "thread-2",
+      threadTitle = "Already open",
+      subAgentId = null,
+    )
+
+    val concreteTab = openedChatFiles().first { it.threadIdentity == "CODEX:thread-1" }
+    concreteTab.updateNewThreadRebindRequestedAtMs(1_000L)
+    service<AgentChatTabsService>().upsert(concreteTab.toSnapshot())
+
+    val rebindReport = rebindOpenConcreteCodexTabs(
+      requestsByProjectPath = mapOf(
+        projectPath to listOf(
+          AgentChatConcreteCodexTabRebindRequest(
+            tabKey = concreteTab.tabKey,
+            currentThreadIdentity = "CODEX:thread-1",
+            newThreadRebindRequestedAtMs = 1_000L,
+            target = AgentChatTabRebindTarget(
+              threadIdentity = "CODEX:thread-2",
+              threadId = "thread-2",
+              shellCommand = listOf("codex", "resume", "thread-2"),
+              threadTitle = "Should not replace",
+              threadActivity = AgentThreadActivity.READY,
+            ),
+          )
+        )
+      )
+    )
+
+    assertThat(rebindReport.reboundBindings).isEqualTo(0)
+    assertThat(rebindReport.outcomesByPath[projectPath].orEmpty().single().status)
+      .isEqualTo(AgentChatConcreteCodexTabRebindStatus.TARGET_ALREADY_OPEN)
+    assertThat(concreteTab.threadIdentity).isEqualTo("CODEX:thread-1")
+    assertThat(concreteTab.newThreadRebindRequestedAtMs).isEqualTo(1_000L)
+  }
+
+  @Test
+  fun testRebindOpenConcreteCodexTabRejectsStaleAnchorTimestamp(): Unit = timeoutRunBlocking {
+    openChatInModal(
+      threadIdentity = "CODEX:thread-1",
+      shellCommand = listOf("codex", "resume", "thread-1"),
+      threadId = "thread-1",
+      threadTitle = "Original thread",
+      subAgentId = null,
+    )
+
+    val file = openedChatFiles().single()
+    file.updateNewThreadRebindRequestedAtMs(1_000L)
+    service<AgentChatTabsService>().upsert(file.toSnapshot())
+    val staleSnapshot = collectOpenConcreteCodexTabsAwaitingNewThreadRebindByPath().getValue(projectPath).single()
+
+    file.updateNewThreadRebindRequestedAtMs(2_000L)
+    service<AgentChatTabsService>().upsert(file.toSnapshot())
+
+    val rebindReport = rebindOpenConcreteCodexTabs(
+      requestsByProjectPath = mapOf(
+        projectPath to listOf(
+          AgentChatConcreteCodexTabRebindRequest(
+            tabKey = staleSnapshot.tabKey,
+            currentThreadIdentity = staleSnapshot.currentThreadIdentity,
+            newThreadRebindRequestedAtMs = staleSnapshot.newThreadRebindRequestedAtMs,
+            target = AgentChatTabRebindTarget(
+              threadIdentity = "CODEX:thread-2",
+              threadId = "thread-2",
+              shellCommand = listOf("codex", "resume", "thread-2"),
+              threadTitle = "Should not rebind",
+              threadActivity = AgentThreadActivity.READY,
+            ),
+          )
+        )
+      )
+    )
+
+    assertThat(rebindReport.reboundBindings).isEqualTo(0)
+    assertThat(rebindReport.outcomesByPath[projectPath].orEmpty().single().status)
+      .isEqualTo(AgentChatConcreteCodexTabRebindStatus.INVALID_CONCRETE_TAB)
+    assertThat(file.threadIdentity).isEqualTo("CODEX:thread-1")
+    assertThat(file.newThreadRebindRequestedAtMs).isEqualTo(2_000L)
+  }
+
+  @Test
   fun testRebindOpenPendingCodexTabsTargetsOnlyRequestedPendingIdentity(): Unit = timeoutRunBlocking {
     openChatInModal(
       threadIdentity = "CODEX:new-1",
@@ -397,7 +584,7 @@ class AgentChatEditorServiceTest {
           AgentChatPendingCodexTabRebindRequest(
             pendingTabKey = pendingTab.tabKey,
             pendingThreadIdentity = "CODEX:new-2",
-            target = AgentChatPendingTabRebindTarget(
+            target = AgentChatTabRebindTarget(
               threadIdentity = "CODEX:thread-2",
               threadId = "thread-2",
               shellCommand = listOf("codex", "resume", "thread-2"),
@@ -442,7 +629,7 @@ class AgentChatEditorServiceTest {
           AgentChatPendingCodexTabRebindRequest(
             pendingTabKey = pendingTab.tabKey,
             pendingThreadIdentity = "CODEX:new-1",
-            target = AgentChatPendingTabRebindTarget(
+            target = AgentChatTabRebindTarget(
               threadIdentity = "CODEX:thread-2",
               threadId = "thread-2",
               shellCommand = listOf("codex", "resume", "thread-2"),
@@ -475,7 +662,7 @@ class AgentChatEditorServiceTest {
           AgentChatPendingCodexTabRebindRequest(
             pendingTabKey = "missing-tab-key",
             pendingThreadIdentity = "CODEX:new-1",
-            target = AgentChatPendingTabRebindTarget(
+            target = AgentChatTabRebindTarget(
               threadIdentity = "CODEX:thread-2",
               threadId = "thread-2",
               shellCommand = listOf("codex", "resume", "thread-2"),
@@ -513,6 +700,20 @@ class AgentChatEditorServiceTest {
     )
 
     assertThat(collectOpenPendingAgentChatProjectPaths()).containsExactly(projectPath)
+  }
+
+  @Test
+  fun testCodexScopedRefreshSignalsEmitNormalizedPaths(): Unit = timeoutRunBlocking {
+    val outputPath = "/work/project-terminal-output-delayed/"
+    val signalWaiter = async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+      withTimeout(5.seconds) {
+        codexScopedRefreshSignals().first()
+      }
+    }
+
+    notifyCodexTerminalOutputForRefresh(outputPath)
+
+    assertThat(signalWaiter.await()).containsExactly("/work/project-terminal-output-delayed")
   }
 
   @Test
@@ -653,6 +854,71 @@ class AgentChatEditorServiceTest {
   }
 
   @Test
+  fun testResolveFromPathSkipsRestoreWhenVersionMismatch(): Unit = timeoutRunBlocking {
+    val tabsService = service<AgentChatTabsService>()
+    val stateService = service<AgentChatTabsStateService>()
+    val snapshot = AgentChatTabSnapshot.create(
+      projectHash = project.locationHash,
+      projectPath = projectPath,
+      threadIdentity = "CODEX:version-mismatch-restore",
+      threadId = "version-mismatch-restore",
+      threadTitle = "Version mismatch",
+      subAgentId = null,
+      shellCommand = codexCommand,
+    )
+    tabsService.upsert(snapshot)
+    try {
+      stateService.forceVersionMismatchForTests(true)
+      assertThat(tabsService.resolveFromPath(snapshot.tabKey.toPath())).isNull()
+
+      stateService.forceVersionMismatchForTests(false)
+      assertThat(tabsService.resolveFromPath(snapshot.tabKey.toPath())).isInstanceOf(AgentChatTabResolution.Resolved::class.java)
+    }
+    finally {
+      stateService.forceVersionMismatchForTests(false)
+      tabsService.forget(snapshot.tabKey)
+    }
+  }
+
+  @Test
+  fun testFirstWriteAfterVersionMismatchPurgesLegacyEntries(): Unit = timeoutRunBlocking {
+    val tabsService = service<AgentChatTabsService>()
+    val stateService = service<AgentChatTabsStateService>()
+    val legacySnapshot = AgentChatTabSnapshot.create(
+      projectHash = project.locationHash,
+      projectPath = projectPath,
+      threadIdentity = "CODEX:legacy-entry",
+      threadId = "legacy-entry",
+      threadTitle = "Legacy",
+      subAgentId = null,
+      shellCommand = codexCommand,
+    )
+    val newSnapshot = AgentChatTabSnapshot.create(
+      projectHash = project.locationHash,
+      projectPath = projectPath,
+      threadIdentity = "CODEX:new-entry",
+      threadId = "new-entry",
+      threadTitle = "New",
+      subAgentId = null,
+      shellCommand = codexCommand,
+    )
+    tabsService.upsert(legacySnapshot)
+    try {
+      stateService.forceVersionMismatchForTests(true)
+      tabsService.upsert(newSnapshot)
+
+      stateService.forceVersionMismatchForTests(false)
+      assertThat(tabsService.load(legacySnapshot.tabKey.value)).isNull()
+      assertThat(tabsService.load(newSnapshot.tabKey.value)).isNotNull
+    }
+    finally {
+      stateService.forceVersionMismatchForTests(false)
+      tabsService.forget(legacySnapshot.tabKey)
+      tabsService.forget(newSnapshot.tabKey)
+    }
+  }
+
+  @Test
   fun testTerminalInitializationFailureDeletesMetadata(): Unit = timeoutRunBlocking {
     val snapshot = AgentChatTabSnapshot.create(
       projectHash = project.locationHash,
@@ -685,7 +951,9 @@ class AgentChatEditorServiceTest {
   private suspend fun openChatInModal(
     threadIdentity: String,
     shellCommand: List<String>,
+    shellEnvVariables: Map<String, String> = emptyMap(),
     startupShellCommandOverride: List<String>? = null,
+    startupShellEnvOverride: Map<String, String>? = null,
     threadId: String,
     threadTitle: String,
     subAgentId: String?,
@@ -695,20 +963,26 @@ class AgentChatEditorServiceTest {
     initialComposedMessage: String? = null,
     initialMessageToken: String? = null,
   ) {
+    val initialMessageDispatchPlan = AgentInitialMessageDispatchPlan(
+      startupLaunchSpecOverride = startupShellCommandOverride?.let { command ->
+        AgentSessionTerminalLaunchSpec(command = command, envVariables = startupShellEnvOverride.orEmpty())
+      },
+      initialComposedMessage = initialComposedMessage,
+      initialMessageToken = initialMessageToken,
+    )
     openChat(
       project = project,
       projectPath = projectPath,
       threadIdentity = threadIdentity,
       shellCommand = shellCommand,
-      startupShellCommandOverride = startupShellCommandOverride,
+      shellEnvVariables = shellEnvVariables,
       threadId = threadId,
       threadTitle = threadTitle,
       subAgentId = subAgentId,
       pendingCreatedAtMs = pendingCreatedAtMs,
       pendingFirstInputAtMs = pendingFirstInputAtMs,
       pendingLaunchMode = pendingLaunchMode,
-      initialComposedMessage = initialComposedMessage,
-      initialMessageToken = initialMessageToken,
+      initialMessageDispatchPlan = initialMessageDispatchPlan,
     )
     waitForCondition {
       openedChatFiles().any { file ->
@@ -729,7 +1003,7 @@ class AgentChatEditorServiceTest {
 
   private suspend fun editorTabTooltip(file: AgentChatVirtualFile): String? {
     return runInUi {
-      AgentChatEditorTabTitleProvider().getEditorTabTooltipText(project, file)
+      AgentChatEditorTabTitleProvider().getEditorTabTooltipHtml(project, file)?.toString()
     }
   }
 

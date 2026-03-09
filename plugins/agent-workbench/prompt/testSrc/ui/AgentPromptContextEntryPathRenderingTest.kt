@@ -3,7 +3,10 @@ package com.intellij.agent.workbench.prompt.ui
 
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptContextItem
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptContextRendererIds
+import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptPayload
+import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptPayloadValue
 import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.testFramework.junit5.TestApplication
 import com.intellij.util.SystemProperties
 import org.assertj.core.api.Assertions.assertThat
@@ -26,6 +29,8 @@ class AgentPromptContextEntryPathRenderingTest {
     )
 
     assertThat(entry.displayText).isEqualTo("File: src${File.separator}Main.kt")
+    assertThat(entry.tooltipText).isEqualTo("file: $filePath")
+    assertThat(entry.tooltipText).doesNotContain("source=")
   }
 
   @Test
@@ -60,6 +65,32 @@ class AgentPromptContextEntryPathRenderingTest {
   }
 
   @Test
+  fun fileChipMiddleTruncatesLongProjectRelativePath() {
+    val home = systemPath(SystemProperties.getUserHome())
+    val projectBasePath = systemPath("$home/agent-workbench-project-long")
+    val relativePath = listOf(
+      "very-long-source-root",
+      "deeply-nested-package-name",
+      "with-extra-context-for-preview",
+      "and-even-more-structure",
+      "VeryLongFileNameForPathChipRendering.kt",
+    ).joinToString(File.separator)
+    val filePath = systemPath("$projectBasePath/$relativePath")
+    val expected = StringUtil.shortenPathWithEllipsis(relativePath, 60, true)
+
+    val entry = contextEntry(
+      rendererId = AgentPromptContextRendererIds.FILE,
+      title = "File",
+      body = filePath,
+      projectBasePath = projectBasePath,
+    )
+
+    assertThat(expected).contains("…")
+    assertThat(entry.displayText).isEqualTo("File: $expected")
+    assertThat(entry.displayText).doesNotEndWith("…")
+  }
+
+  @Test
   fun pathsChipKeepsPrefixAndShortensPath() {
     val home = systemPath(SystemProperties.getUserHome())
     val projectBasePath = systemPath("$home/agent-workbench-project-paths")
@@ -72,7 +103,28 @@ class AgentPromptContextEntryPathRenderingTest {
       projectBasePath = projectBasePath,
     )
 
-    assertThat(entry.displayText).isEqualTo("Paths: dir: subdir")
+    assertThat(entry.displayText).isEqualTo("Paths: subdir")
+    assertThat(entry.tooltipText).isEqualTo("path: $selectedDirectory")
+  }
+
+  @Test
+  fun pathsChipMiddleTruncatesLongHomeRelativePath() {
+    val home = systemPath(SystemProperties.getUserHome())
+    val selectedPath = systemPath(
+      "$home/awb-long-selection/deeply-nested-selection/with-extra-context/for-preview/VeryLongSelectedPathName.txt"
+    )
+    val expected = StringUtil.shortenPathWithEllipsis(FileUtil.getLocationRelativeToUserHome(selectedPath, false), 60, true)
+
+    val entry = contextEntry(
+      rendererId = AgentPromptContextRendererIds.PATHS,
+      title = "Paths",
+      body = "file: $selectedPath",
+      projectBasePath = systemPath("$home/other-project"),
+    )
+
+    assertThat(expected).contains("…")
+    assertThat(entry.displayText).isEqualTo("Paths: $expected")
+    assertThat(entry.displayText).doesNotEndWith("…")
   }
 
   @Test
@@ -91,17 +143,70 @@ class AgentPromptContextEntryPathRenderingTest {
     assertThat(entry.displayText).isEqualTo("Symbol: $absoluteContent")
   }
 
+  @Test
+  fun snippetChipShowsTitleOnly() {
+    val entry = contextEntry(
+      rendererId = AgentPromptContextRendererIds.SNIPPET,
+      title = "Selection (1-5)",
+      body = "val x = foo.bar(baz)\nval y = 42",
+      projectBasePath = null,
+    )
+
+    assertThat(entry.displayText).isEqualTo("Selection (1-5)")
+  }
+
+  @Test
+  fun vcsRevisionsChipUsesFirstRevisionFromPayload() {
+    val entry = contextEntry(
+      rendererId = AgentPromptContextRendererIds.VCS_REVISIONS,
+      title = "VCS Revisions",
+      body = "",
+      projectBasePath = null,
+      payload = AgentPromptPayload.obj(
+        "entries" to AgentPromptPayload.arr(
+          AgentPromptPayload.obj(
+            "hash" to AgentPromptPayload.str("abc12345"),
+            "rootPath" to AgentPromptPayload.str("/repo"),
+          ),
+        )
+      ),
+    )
+
+    assertThat(entry.displayText).isEqualTo("VCS Revisions: abc12345")
+    assertThat(entry.tooltipText).isEqualTo("vcs revisions:\nabc12345")
+    assertThat(entry.tooltipText).doesNotContain("source=")
+  }
+
+  @Test
+  fun unknownRendererTooltipFallsBackToGenericEnvelopeRender() {
+    val entry = contextEntry(
+      rendererId = "customRenderer",
+      title = "Custom",
+      body = "line 1",
+      projectBasePath = null,
+    )
+
+    assertThat(entry.tooltipText).isEqualTo(
+      "context: renderer=customRenderer title=Custom\n" +
+      "```text\n" +
+      "line 1\n" +
+      "```"
+    )
+  }
+
   private fun contextEntry(
     rendererId: String,
     title: String,
     body: String,
     projectBasePath: String?,
+    payload: AgentPromptPayloadValue = AgentPromptPayloadValue.Obj.EMPTY,
   ): ContextEntry {
     return ContextEntry(
       item = AgentPromptContextItem(
         rendererId = rendererId,
         title = title,
         body = body,
+        payload = payload,
         source = "test",
       ),
       projectBasePath = projectBasePath,

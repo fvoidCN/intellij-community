@@ -51,7 +51,7 @@ import com.intellij.openapi.wm.impl.content.ContentLayout
 import com.intellij.openapi.wm.impl.customFrameDecorations.header.CustomWindowHeaderUtil
 import com.intellij.openapi.wm.impl.headertoolbar.MainToolbar
 import com.intellij.openapi.wm.impl.isInternal
-import com.intellij.toolWindow.InternalDecoratorImpl.Companion.preventRecursiveBackgroundUpdateOnToolwindow
+import com.intellij.toolWindow.InternalDecoratorImpl
 import com.intellij.toolWindow.ToolWindowButtonManager
 import com.intellij.toolWindow.ToolWindowPaneNewButtonManager
 import com.intellij.toolWindow.xNext.island.XNextIslandHolder
@@ -196,9 +196,6 @@ internal class IslandsUICustomization : InternalUICustomization() {
       return !isManyIslandEnabled
     }
 
-  override val isTabOccupiesWholeHeight: Boolean
-    get() = !isManyIslandEnabled
-
   override val isRoundedTabDuringDrag: Boolean
     get() = isManyIslandEnabled && (WindowRoundedCornersManager.isAvailable() || StartupUiUtil.isWaylandToolkit())
 
@@ -273,7 +270,7 @@ internal class IslandsUICustomization : InternalUICustomization() {
     val isToolWindow = UIUtil.getGeneralizedParentOfType(InternalDecorator::class.java, component) != null
 
     if (isToolWindow) {
-      if (component.background == JBColor.PanelBackground) {
+      if (component.background == JBColor.PanelBackground && !InternalDecoratorImpl.isRecursiveBackgroundUpdateDisabled(component)) {
         if (UIUtil.getGeneralizedParentOfType(SearchReplaceWrapper::class.java, component) != null) {
           return@AWTEventListener
         }
@@ -653,7 +650,7 @@ internal class IslandsUICustomization : InternalUICustomization() {
   override fun configureTerminalSearchReplaceComponent(component: EditorHeaderComponent): JComponent {
     component.putClientProperty("originalBorder", component.border)
     val header = configureSearchReplaceComponent(component, 6)
-    preventRecursiveBackgroundUpdateOnToolwindow(header)
+    InternalDecoratorImpl.preventRecursiveBackgroundUpdateOnToolwindow(header)
     return header
   }
 
@@ -1204,7 +1201,7 @@ internal class IslandsUICustomization : InternalUICustomization() {
       }
     }
 
-    val hovered = tabs.isHoveredTab(label)
+    val hovered = tabs.isHoveredOrWithPopup(label)
     val isGradient = isIslandsGradientEnabled && !CustomWindowHeaderUtil.isCompactHeader() && isColorfulToolbar(frame)
     val rect = Rectangle(label.width, label.height)
 
@@ -1226,7 +1223,7 @@ internal class IslandsUICustomization : InternalUICustomization() {
     else if (lastIndex > 1 && index < lastIndex) {
       val nextTab = tabs.getTabAt(index + 1)
 
-      if (nextTab != tabs.selectedInfo && !tabs.isHoveredTab(tabs.getTabLabel(nextTab))) {
+      if (nextTab != tabs.selectedInfo && !tabs.isHoveredOrWithPopup(tabs.getTabLabel(nextTab))) {
         val gg = if (isGradient) IdeBackgroundUtil.getOriginalGraphics(g) else g
         val border = JBUI.scale(1).toDouble()
         val width = label.width - border

@@ -5,15 +5,19 @@ import com.intellij.agent.workbench.common.icons.AgentWorkbenchCommonIcons
 import com.intellij.agent.workbench.sessions.core.AgentSessionLaunchMode
 import com.intellij.agent.workbench.sessions.core.AgentSessionProvider
 import com.intellij.agent.workbench.sessions.core.AgentSessionThread
+import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptInitialMessageRequest
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessagePlan
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionLaunchSpec
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionProviderBridge
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionProviderBridges
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionSource
+import com.intellij.agent.workbench.sessions.core.providers.AgentSessionTerminalLaunchSpec
 import com.intellij.agent.workbench.sessions.core.providers.InMemoryAgentSessionProviderRegistry
 import com.intellij.openapi.extensions.ExtensionPointName
 import com.intellij.openapi.extensions.LoadingOrder
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.use
 import com.intellij.testFramework.junit5.TestApplication
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -31,7 +35,7 @@ class AgentSessionProviderBridgesTest {
     val initialSources = AgentSessionProviderBridges.sessionSources()
 
     val disposable = Disposer.newDisposable()
-    try {
+    disposable.use {
       val bridge = TestAgentSessionProviderBridge(provider = provider, sourceId = "dynamic")
       extensionPoint.point.registerExtension(bridge, disposable)
 
@@ -48,9 +52,6 @@ class AgentSessionProviderBridgesTest {
         assertThat(sourcesAfterRegister).containsExactlyElementsOf(initialSources)
       }
     }
-    finally {
-      Disposer.dispose(disposable)
-    }
 
     assertThat(AgentSessionProviderBridges.find(provider)).isSameAs(initialBridge)
     assertThat(AgentSessionProviderBridges.sessionSources()).containsExactlyElementsOf(initialSources)
@@ -62,7 +63,7 @@ class AgentSessionProviderBridgesTest {
     val initialBridge = AgentSessionProviderBridges.find(provider)
 
     val disposable = Disposer.newDisposable()
-    try {
+    disposable.use {
       val firstBridge = TestAgentSessionProviderBridge(provider = provider, sourceId = "first")
       val secondBridge = TestAgentSessionProviderBridge(provider = provider, sourceId = "second")
       extensionPoint.point.registerExtension(firstBridge, disposable)
@@ -72,15 +73,12 @@ class AgentSessionProviderBridgesTest {
       assertThat(AgentSessionProviderBridges.find(provider)).isSameAs(expectedBridge)
       assertThat(AgentSessionProviderBridges.find(provider)).isNotSameAs(secondBridge)
     }
-    finally {
-      Disposer.dispose(disposable)
-    }
   }
 
   @Test
   fun allBridgesFollowExtensionOrder() {
     val disposable = Disposer.newDisposable()
-    try {
+    disposable.use {
       val lastBridge = TestAgentSessionProviderBridge(provider = AgentSessionProvider.from("aaa"), sourceId = "last")
       val firstBridge = TestAgentSessionProviderBridge(provider = AgentSessionProvider.from("bbb"), sourceId = "first")
       extensionPoint.point.registerExtension(lastBridge, LoadingOrder.LAST, disposable)
@@ -88,9 +86,6 @@ class AgentSessionProviderBridgesTest {
 
       val orderedIds = AgentSessionProviderBridges.allBridges().map { it.provider.value }
       assertThat(orderedIds.indexOf(firstBridge.provider.value)).isLessThan(orderedIds.indexOf(lastBridge.provider.value))
-    }
-    finally {
-      Disposer.dispose(disposable)
     }
   }
 
@@ -138,16 +133,26 @@ class AgentSessionProviderBridgesTest {
 
     override fun isCliAvailable(): Boolean = true
 
-    override fun buildResumeCommand(sessionId: String): List<String> = listOf("test", "resume", sessionId)
+    override fun buildResumeLaunchSpec(sessionId: String): AgentSessionTerminalLaunchSpec {
+      return AgentSessionTerminalLaunchSpec(command = listOf("test", "resume", sessionId))
+    }
 
-    override fun buildNewSessionCommand(mode: AgentSessionLaunchMode): List<String> = listOf("test", "new", mode.name)
+    override fun buildNewSessionLaunchSpec(mode: AgentSessionLaunchMode): AgentSessionTerminalLaunchSpec {
+      return AgentSessionTerminalLaunchSpec(command = listOf("test", "new", mode.name))
+    }
 
-    override fun buildNewEntryCommand(): List<String> = listOf("test")
+    override fun buildNewEntryLaunchSpec(): AgentSessionTerminalLaunchSpec {
+      return AgentSessionTerminalLaunchSpec(command = listOf("test"))
+    }
+
+    override fun buildInitialMessagePlan(request: AgentPromptInitialMessageRequest): AgentInitialMessagePlan {
+      return AgentInitialMessagePlan.composeDefault(request)
+    }
 
     override suspend fun createNewSession(path: String, mode: AgentSessionLaunchMode): AgentSessionLaunchSpec {
       return AgentSessionLaunchSpec(
         sessionId = null,
-        command = listOf("test", "create", path),
+        launchSpec = AgentSessionTerminalLaunchSpec(command = listOf("test", "create", path)),
       )
     }
   }

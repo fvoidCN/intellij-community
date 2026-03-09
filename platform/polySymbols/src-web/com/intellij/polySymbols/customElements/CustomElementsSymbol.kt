@@ -36,8 +36,6 @@ interface CustomElementsSymbol : PolySymbol, PolySymbolScope {
 
   override fun createPointer(): Pointer<out CustomElementsSymbol>
 
-  override fun getModificationCount(): Long = 0
-
   companion object {
 
     private const val NAMESPACE_CUSTOM_ELEMENTS_MANIFEST: String = "custom-elements-manifest"

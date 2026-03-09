@@ -10,6 +10,10 @@ import kotlinx.coroutines.flow.flowOf
 interface AgentPromptLauncherBridge {
   fun launch(request: AgentPromptLaunchRequest): AgentPromptLaunchResult
 
+  fun preferredProvider(): AgentSessionProvider? {
+    return null
+  }
+
   fun observeExistingThreads(
     projectPath: String,
     provider: AgentSessionProvider,
@@ -25,6 +29,14 @@ interface AgentPromptLauncherBridge {
   }
 
   suspend fun refreshExistingThreads(projectPath: String, provider: AgentSessionProvider) {
+  }
+
+  fun resolveWorkingProjectPath(invocationData: AgentPromptInvocationData): String? {
+    return null
+  }
+
+  fun listWorkingProjectPathCandidates(invocationData: AgentPromptInvocationData): List<AgentPromptProjectPathCandidate> {
+    return emptyList()
   }
 }
 

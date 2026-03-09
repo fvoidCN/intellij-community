@@ -92,6 +92,7 @@ import com.intellij.util.concurrency.EdtExecutorService;
 import com.intellij.util.concurrency.ThreadingAssertions;
 import com.intellij.util.concurrency.annotations.RequiresBackgroundThread;
 import com.intellij.util.concurrency.annotations.RequiresEdt;
+import com.intellij.util.concurrency.annotations.RequiresReadLock;
 import com.intellij.util.containers.ContainerUtil;
 import com.intellij.util.io.storage.HeavyProcessLatch;
 import io.opentelemetry.context.Context;
@@ -225,7 +226,7 @@ public final class DaemonCodeAnalyzerImpl extends DaemonCodeAnalyzerEx
   }
 
   synchronized void clearReferences() {
-    processIndicators(indicator -> {indicator.cancel(); return true;});
+    processIndicators(indicator -> {indicator.cancel("DCA.clearReferences"); return true;});
     // avoid leak of highlight session via user data
     myUpdateProgress.clear();
     myUpdateRunnableFuture.cancel(true);
@@ -246,6 +247,7 @@ public final class DaemonCodeAnalyzerImpl extends DaemonCodeAnalyzerEx
   }
 
   @TestOnly
+  @RequiresReadLock
   public static @NotNull List<HighlightInfo> getHighlights(@NotNull Document document,
                                                            @Nullable HighlightSeverity minSeverity,
                                                            @NotNull Project project) {
@@ -495,10 +497,12 @@ public final class DaemonCodeAnalyzerImpl extends DaemonCodeAnalyzerEx
           List<TextEditorHighlightingPass> mainPasses = TextEditorHighlightingPassRegistrarEx.getInstanceEx(myProject)
             .instantiateMainPasses(psiFile, document, HighlightInfoProcessor.getEmpty());
 
-          JobLauncher.getInstance().invokeConcurrentlyUnderProgress(mainPasses, progress, pass -> ReadAction.compute(() -> {
-            pass.doCollectInformation(progress);
-            return true;
-          }));
+          JobLauncher.getInstance()
+            .invokeConcurrentlyUnderProgress(mainPasses, progress, pass -> ReadAction.computeBlocking(() -> {
+              pass.doCollectInformation(progress);
+              return true;
+            }));
+
           return mainPasses;
         });
 
@@ -944,7 +948,7 @@ public final class DaemonCodeAnalyzerImpl extends DaemonCodeAnalyzerEx
     ThreadingAssertions.assertNoOwnReadAccess();
     List<HighlightInfo> relevantInfos = new ArrayList<>();
     Document document = editor.getDocument();
-    ReadAction.run(() -> {
+    ReadAction.runBlocking(() -> {
       PsiUtilBase.assertEditorAndProjectConsistent(project, editor);
       CaretModel caretModel = editor.getCaretModel();
       int offset = caretModel.getOffset();
@@ -1355,7 +1359,7 @@ public final class DaemonCodeAnalyzerImpl extends DaemonCodeAnalyzerEx
     }
     try {
       ProgressManager.getInstance().executeProcessUnderProgress(Context.current().wrap(() -> {
-        HighlightingPass[] passes = ReadAction.compute(() -> {
+        HighlightingPass[] passes = ReadAction.computeBlocking(() -> {
           if (progress.isCanceled() ||
               myProject.isDisposed() ||
               getPsiDocumentManager().hasEventSystemEnabledUncommittedDocuments() ||
@@ -1440,11 +1444,11 @@ public final class DaemonCodeAnalyzerImpl extends DaemonCodeAnalyzerEx
     MarkupModel markupModel = DocumentMarkupModel.forDocument(document, project, true);
     List<RangeHighlighter> invalid = ContainerUtil.filter(markupModel.getAllHighlighters(), h -> {
       HighlightInfo info = HighlightInfo.fromRangeHighlighter(h);
-      if (info == null) {
+      if (info == null || !h.isValid()) {
         return false;
       }
       RangeHighlighterEx fromInfo = info.getHighlighter();
-      // find strange highlighters that have attached HighlightInfo but it's the wrong one
+      // found strange highlighter that have attached HighlightInfo but it's the wrong one
       return fromInfo != null && fromInfo != h;
     });
 

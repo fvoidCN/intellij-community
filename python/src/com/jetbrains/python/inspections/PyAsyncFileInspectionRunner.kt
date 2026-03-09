@@ -7,20 +7,27 @@ import com.github.benmanes.caffeine.cache.LoadingCache
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.components.serviceIfCreated
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.NlsContexts
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.psi.PsiFile
 import com.intellij.ui.EditorNotifications
+import com.intellij.ui.components.ActionLink
 import com.jetbrains.python.inspections.interpreter.InterpreterFix
+import com.jetbrains.python.inspections.interpreter.BusyGuardExecutor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import com.intellij.platform.util.coroutines.sync.OverflowSemaphore
+import kotlinx.coroutines.future.asCompletableFuture
 import kotlinx.coroutines.launch
 import org.jetbrains.annotations.ApiStatus
-import kotlinx.coroutines.future.asCompletableFuture
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
 import kotlin.time.Duration
@@ -60,7 +67,7 @@ class PyAsyncFileInspectionRunner(
 
   private fun startComputation(module: Module): Deferred<InspectionRunnerResult> {
     val project = module.project
-    val deferred = project.service<InspectionRunnerService>().scope.async {
+    val deferred = project.service<InterpreterFixExecutor>().scope.async {
       withBackgroundProgress(project, progressTitle) {
         cacheLoader(module)
       }
@@ -90,7 +97,7 @@ class PyAsyncFileInspectionRunner(
     // Must use a separate coroutine scope: invokeOnCompletion runs inline in the completing
     // coroutine's context, and EditorNotifications.getInstance() may need runBlocking for
     // service initialization, which fails inside an already-completed coroutine scope.
-    project.serviceIfCreated<InspectionRunnerService>()?.scope?.launch {
+    project.serviceIfCreated<InterpreterFixExecutor>()?.scope?.launch {
       EditorNotifications.getInstance(project).updateAllNotifications()
     }
   }
@@ -106,13 +113,57 @@ private class CacheEvictingFix(
   private val fix: InterpreterFix,
   private val cacheEvictor: () -> Unit,
 ) : InterpreterFix {
-  override val name: String get() = fix.name
-
-  override fun apply(module: Module, project: Project, psiFile: PsiFile) {
-    fix.apply(module, project, psiFile)
-    cacheEvictor()
+  override fun createActionLink(module: Module, project: Project, psiFile: PsiFile, executor: BusyGuardExecutor): ActionLink {
+    val link = fix.createActionLink(module, project, psiFile, executor)
+    link.addActionListener { cacheEvictor() }
+    return link
   }
 }
 
+/**
+ * Project-level [BusyGuardExecutor] implementation that ensures at most one interpreter fix runs at a time.
+ *
+ * Concurrency is controlled by an [OverflowSemaphore] with a single permit and [BufferOverflow.DROP_LATEST] policy.
+ * This combination is essential: when the permit is already held, a new coroutine launched by [execute]
+ * is immediately cancelled instead of queuing up or suspending indefinitely.
+ * Without `DROP_LATEST`, submissions would accumulate and execute sequentially after the first one completes,
+ * which is undesirable because the user may have already moved on or the fix may no longer be relevant.
+ *
+ * State transitions of [isBusy] trigger [EditorNotifications.updateAllNotifications],
+ * so all "no interpreter configured" panels rebuild and reflect the current busy/idle state.
+ */
+@ApiStatus.Internal
 @Service(Service.Level.PROJECT)
-private class InspectionRunnerService(val scope: CoroutineScope)
+class InterpreterFixExecutor(private val project: Project, internal val scope: CoroutineScope) : BusyGuardExecutor {
+  private val semaphore = OverflowSemaphore(permits = 1, overflow = BufferOverflow.DROP_LATEST)
+  private val _isBusy = MutableStateFlow(false)
+  override val isBusy: StateFlow<Boolean> = _isBusy
+
+  init {
+    scope.launch {
+      isBusy.collect { EditorNotifications.getInstance(project).updateAllNotifications() }
+    }
+  }
+
+  override fun execute(action: suspend () -> Unit) {
+    scope.launch {
+      semaphore.withPermit {
+        _isBusy.value = true
+        try {
+          action()
+        }
+        finally {
+          _isBusy.value = false
+        }
+      }
+    }.invokeOnCompletion { cause ->
+      if (cause != null && _isBusy.value) {
+        LOG.warn("Interpreter fix submission discarded: another fix is already in progress")
+      }
+    }
+  }
+
+  companion object {
+    private val LOG = logger<InterpreterFixExecutor>()
+  }
+}

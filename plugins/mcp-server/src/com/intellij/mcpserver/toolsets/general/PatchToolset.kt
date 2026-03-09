@@ -24,19 +24,21 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.findOrCreateFile
 import com.intellij.openapi.vfs.transformer.TextPresentationTransformers
 import com.intellij.util.DocumentUtil
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.withContext
 import kotlin.io.path.name
 import kotlin.io.path.pathString
 
 class PatchToolset : McpToolset {
   @McpTool
   @McpDescription("""
-        Apply a patch using the Codex apply_patch format.
+        Apply a patch using the Codex apply_patch format or unified git diff format.
         Supports Add, Delete, and Update operations with optional Move to path for updates.
         Paths must stay inside the project directory.
     """)
   suspend fun apply_patch(
-    @McpDescription("Patch text in the apply_patch format, including Begin/End markers.")
+    @McpDescription("Patch text in the apply_patch format or unified git diff format.")
     input: String? = null,
     @McpDescription("Alias of `input` for compatibility with clients that send `{patch: ...}`.")
     patch: String? = null,
@@ -122,19 +124,19 @@ private suspend fun applyUpdateWithDocument(
   sourcePath: java.nio.file.Path,
   operation: UpdatePatchOperation,
 ) {
-  readAndEdtWriteAction {
+  val changedDocument = readAndEdtWriteAction {
     if (sourceFile.fileType.isBinary) mcpFail("File ${operation.path} is binary")
     val document = fileDocumentManager.getDocument(sourceFile)
                    ?: mcpFail("Could not get document for ${operation.path}")
     val originalText = TextPresentationTransformers.toPersistent(document.text, virtualFile = sourceFile).toString()
-    val updatedText = PatchApplyEngine.applyHunks(originalText, operation.hunks)
+    val updatedText = if (operation.hunks.isEmpty()) originalText else PatchApplyEngine.applyHunks(originalText, operation.hunks)
     val moveTarget = operation.moveTo?.let { moveTo ->
       val resolved = project.resolveInProject(moveTo)
       if (resolved == sourcePath) null else moveTo to resolved
     }
     val hasContentChanges = updatedText != originalText
     if (!hasContentChanges && moveTarget == null) {
-      return@readAndEdtWriteAction value(Unit)
+      return@readAndEdtWriteAction value<Document?>(null)
     }
 
     writeAction {
@@ -148,8 +150,18 @@ private suspend fun applyUpdateWithDocument(
       }
 
       if (hasContentChanges) {
-        writeFileTextByDocument(fileDocumentManager, document, targetFile, updatedText)
+        writeFileTextByDocument(document, targetFile, updatedText)
+        document
       }
+      else {
+        null
+      }
+    }
+  }
+
+  if (changedDocument != null) {
+    withContext(Dispatchers.Default) {
+      fileDocumentManager.saveDocument(changedDocument)
     }
   }
 }
@@ -165,7 +177,7 @@ private suspend fun applyUpdateWithoutDocument(
     if (sourceFile.fileType.isBinary) mcpFail("File ${operation.path} is binary")
     val sourceText = VfsUtil.loadText(sourceFile)
     val originalText = TextPresentationTransformers.toPersistent(sourceText, virtualFile = sourceFile).toString()
-    val updatedText = PatchApplyEngine.applyHunks(originalText, operation.hunks)
+    val updatedText = if (operation.hunks.isEmpty()) originalText else PatchApplyEngine.applyHunks(originalText, operation.hunks)
     val moveTarget = operation.moveTo?.let { moveTo ->
       val resolved = project.resolveInProject(moveTo)
       if (resolved == sourcePath) null else moveTo to resolved
@@ -218,7 +230,6 @@ private fun moveFile(requestor: Any, file: VirtualFile, targetPath: java.nio.fil
 }
 
 private fun writeFileTextByDocument(
-  fileDocumentManager: FileDocumentManager,
   document: Document,
   file: VirtualFile,
   text: String,
@@ -227,7 +238,6 @@ private fun writeFileTextByDocument(
   DocumentUtil.executeInBulk(document, true) {
     document.setText(documentText)
   }
-  fileDocumentManager.saveDocument(document)
 }
 
 private fun writeFileTextByVfs(

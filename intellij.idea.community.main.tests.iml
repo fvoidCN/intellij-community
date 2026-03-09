@@ -89,6 +89,7 @@
     <orderEntry type="module" module-name="intellij.agent.workbench.plugin" scope="TEST" />
     <orderEntry type="module" module-name="intellij.agent.workbench.sessions" scope="TEST" />
     <orderEntry type="module" module-name="intellij.platform.polySymbols.tests" scope="TEST" />
+    <orderEntry type="module" module-name="intellij.gradle.native.tooling.tests" scope="TEST" />
     <orderEntry type="module" module-name="intellij.platform.images.tests" scope="TEST" />
     <orderEntry type="module" module-name="intellij.regexp.tests" scope="TEST" />
     <orderEntry type="module" module-name="intellij.platform.debugger.impl.tests" scope="TEST" />
@@ -102,6 +103,7 @@
     <orderEntry type="module" module-name="intellij.python.test.env.junit4" scope="TEST" />
     <orderEntry type="module" module-name="intellij.python.test.env.plain" scope="TEST" />
     <orderEntry type="module" module-name="intellij.python.test.env.uv" scope="TEST" />
+    <orderEntry type="module" module-name="intellij.maven.server.tests" scope="TEST" />
     <orderEntry type="module" module-name="intellij.platform.completion.common.tests" scope="TEST" />
     <orderEntry type="module" module-name="intellij.platform.settings.local.tests" scope="TEST" />
     <orderEntry type="module" module-name="intellij.platform.vcs.impl.frontend.tests" scope="TEST" />
@@ -110,5 +112,7 @@
     <orderEntry type="module" module-name="intellij.platform.debugger.impl.frontend.tests" scope="TEST" />
     <orderEntry type="module" module-name="intellij.platform.debugger.impl.ui.tests" scope="TEST" />
     <orderEntry type="module" module-name="intellij.relaxng.tests" scope="TEST" />
+    <orderEntry type="module" module-name="intellij.vcs.git.coverage" scope="TEST" />
+    <orderEntry type="module" module-name="intellij.java.rareRefactorings" scope="TEST" />
   </component>
 </module>

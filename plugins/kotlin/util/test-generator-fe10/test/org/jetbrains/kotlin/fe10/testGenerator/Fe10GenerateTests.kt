@@ -23,7 +23,7 @@ import org.jetbrains.kotlin.findUsages.AbstractK1KotlinGroupUsagesBySimilarityFe
 import org.jetbrains.kotlin.findUsages.AbstractK1KotlinGroupUsagesBySimilarityTest
 import org.jetbrains.kotlin.findUsages.AbstractK1KotlinScriptFindUsagesTest
 import org.jetbrains.kotlin.formatter.AbstractEnterHandlerTest
-import org.jetbrains.kotlin.formatter.AbstractFormatterTest
+import org.jetbrains.kotlin.formatter.AbstractK1FormatterTest
 import org.jetbrains.kotlin.gradle.scripting.k1.AbstractK1GradleBuildFileHighlightingTest
 import org.jetbrains.kotlin.idea.AbstractExpressionSelectionTest
 import org.jetbrains.kotlin.idea.AbstractSmartSelectionTest
@@ -71,11 +71,11 @@ import org.jetbrains.kotlin.idea.compilerPlugin.kotlinxSerialization.AbstractSer
 import org.jetbrains.kotlin.idea.completion.test.AbstractCompiledKotlinInJavaCompletionTest
 import org.jetbrains.kotlin.idea.completion.test.AbstractDumbCompletionTest
 import org.jetbrains.kotlin.idea.completion.test.AbstractJava8BasicCompletionTest
-import org.jetbrains.kotlin.idea.completion.test.AbstractJvmSmartCompletionTest
 import org.jetbrains.kotlin.idea.completion.test.AbstractJvmWithLibBasicCompletionTest
 import org.jetbrains.kotlin.idea.completion.test.AbstractK1CompletionIncrementalResolveTest
 import org.jetbrains.kotlin.idea.completion.test.AbstractK1JSBasicCompletionTest
 import org.jetbrains.kotlin.idea.completion.test.AbstractK1JvmBasicCompletionTest
+import org.jetbrains.kotlin.idea.completion.test.AbstractK1JvmSmartCompletionTest
 import org.jetbrains.kotlin.idea.completion.test.AbstractK1MLPerformanceCompletionTest
 import org.jetbrains.kotlin.idea.completion.test.AbstractKeywordCompletionTest
 import org.jetbrains.kotlin.idea.completion.test.AbstractKotlinSourceInJavaCompletionTest
@@ -1089,7 +1089,7 @@ private fun assembleWorkspace(): TWorkspace = workspace(KotlinPluginMode.K1) {
     }
 
     testGroup("idea/tests", category = CODE_INSIGHT) {
-        testClass<AbstractFormatterTest> {
+        testClass<AbstractK1FormatterTest>(generatedClassName = "org.jetbrains.kotlin.formatter.FormatterTestGenerated") {
             model("formatter", pattern = Patterns.forRegex("""^([^.]+)\.after\.kt.*$"""))
             model(
                 "formatter/trailingComma",
@@ -1550,7 +1550,7 @@ private fun assembleWorkspace(): TWorkspace = workspace(KotlinPluginMode.K1) {
             model("basic/java", pattern = KT_WITHOUT_FIR_PREFIX)
         }
 
-        testClass<AbstractJvmSmartCompletionTest> {
+        testClass<AbstractK1JvmSmartCompletionTest> {
             model("smart", pattern = KT_WITHOUT_FIR_PREFIX)
         }
 

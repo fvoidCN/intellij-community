@@ -1,17 +1,24 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.agent.workbench.chat
 
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessageTimeoutPolicy
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
+import com.intellij.terminal.frontend.view.TerminalKeyEvent
+import com.intellij.terminal.frontend.view.TerminalViewSessionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import java.awt.event.KeyEvent
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
+import java.util.ArrayDeque
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -20,11 +27,7 @@ class AgentChatFileEditorLifecycleTest {
   @Test
   fun preferredFocusedComponentDoesNotStartTerminalInitialization() {
     val terminalTabs = FakeAgentChatTerminalTabs()
-    val editor = AgentChatFileEditor(
-      project = testProject(),
-      file = testFile(),
-      terminalTabs = terminalTabs,
-    )
+    val editor = testEditor(terminalTabs = terminalTabs)
 
     val preferred = editor.preferredFocusedComponent
 
@@ -35,11 +38,7 @@ class AgentChatFileEditorLifecycleTest {
   @Test
   fun selectNotifyInitializesTerminalOnce() {
     val terminalTabs = FakeAgentChatTerminalTabs()
-    val editor = AgentChatFileEditor(
-      project = testProject(),
-      file = testFile(),
-      terminalTabs = terminalTabs,
-    )
+    val editor = testEditor(terminalTabs = terminalTabs)
 
     editor.selectNotify()
     editor.selectNotify()
@@ -51,11 +50,7 @@ class AgentChatFileEditorLifecycleTest {
   @Test
   fun disposeClosesInitializedTerminalTabOnce() {
     val terminalTabs = FakeAgentChatTerminalTabs()
-    val editor = AgentChatFileEditor(
-      project = testProject(),
-      file = testFile(),
-      terminalTabs = terminalTabs,
-    )
+    val editor = testEditor(terminalTabs = terminalTabs)
 
     editor.selectNotify()
     Disposer.dispose(editor)
@@ -68,11 +63,7 @@ class AgentChatFileEditorLifecycleTest {
   @Test
   fun disposeWithoutInitializationDoesNotCloseTerminalTab() {
     val terminalTabs = FakeAgentChatTerminalTabs()
-    val editor = AgentChatFileEditor(
-      project = testProject(),
-      file = testFile(),
-      terminalTabs = terminalTabs,
-    )
+    val editor = testEditor(terminalTabs = terminalTabs)
 
     Disposer.dispose(editor)
 
@@ -90,14 +81,15 @@ class AgentChatFileEditorLifecycleTest {
         initialMessageSent = false,
       )
     }
-    val editor = AgentChatFileEditor(
-      project = testProject(),
-      file = file,
-      terminalTabs = terminalTabs,
-    )
+    val editor = testEditor(file = file, terminalTabs = terminalTabs)
 
     editor.selectNotify()
     editor.selectNotify()
+    assertThat(terminalTabs.tab.sentTexts).isEmpty()
+
+    terminalTabs.tab.setSessionState(TerminalViewSessionState.Running)
+
+    waitForCondition { terminalTabs.tab.sentTexts.size == 1 }
 
     assertThat(file.initialMessageSent).isTrue()
     assertThat(terminalTabs.tab.sentTexts)
@@ -105,14 +97,10 @@ class AgentChatFileEditorLifecycleTest {
   }
 
   @Test
-  fun flushPendingInitialMessageSendsInjectedMessageForInitializedEditor() {
+  fun flushPendingInitialMessageWaitsForRunningSessionState() {
     val terminalTabs = FakeAgentChatTerminalTabs()
     val file = testFile()
-    val editor = AgentChatFileEditor(
-      project = testProject(),
-      file = file,
-      terminalTabs = terminalTabs,
-    )
+    val editor = testEditor(file = file, terminalTabs = terminalTabs)
 
     editor.selectNotify()
     file.updateInitialMessageMetadata(
@@ -121,14 +109,251 @@ class AgentChatFileEditorLifecycleTest {
       initialMessageSent = false,
     )
 
-    val firstFlushSent = editor.flushPendingInitialMessageIfInitialized()
-    val secondFlushSent = editor.flushPendingInitialMessageIfInitialized()
+    editor.flushPendingInitialMessageIfInitialized()
+    assertThat(terminalTabs.tab.sentTexts).isEmpty()
 
-    assertThat(firstFlushSent).isTrue()
-    assertThat(secondFlushSent).isFalse()
+    terminalTabs.tab.setSessionState(TerminalViewSessionState.Running)
+    waitForCondition { terminalTabs.tab.sentTexts.size == 1 }
+
+    editor.flushPendingInitialMessageIfInitialized()
     assertThat(file.initialMessageSent).isTrue()
     assertThat(terminalTabs.tab.sentTexts)
       .containsExactly(SentTerminalText("Apply follow-up changes", shouldExecute = true))
+  }
+
+  @Test
+  fun disposeBeforeSessionRunningSkipsInitialMessageSend() {
+    val terminalTabs = FakeAgentChatTerminalTabs()
+    val file = testFile().also {
+      it.updateInitialMessageMetadata(
+        initialComposedMessage = "Generate tests",
+        initialMessageToken = "token-dispose",
+        initialMessageSent = false,
+      )
+    }
+    val editor = testEditor(file = file, terminalTabs = terminalTabs)
+
+    editor.selectNotify()
+    Disposer.dispose(editor)
+    terminalTabs.tab.setSessionState(TerminalViewSessionState.Running)
+    Thread.sleep(100)
+
+    assertThat(terminalTabs.tab.sentTexts).isEmpty()
+    assertThat(file.initialMessageSent).isFalse()
+  }
+
+  @Test
+  fun waitingForSessionRunningSendsLatestInitialMessageMetadata() {
+    val terminalTabs = FakeAgentChatTerminalTabs()
+    val file = testFile()
+    val editor = testEditor(file = file, terminalTabs = terminalTabs)
+
+    editor.selectNotify()
+    file.updateInitialMessageMetadata(
+      initialComposedMessage = "First draft",
+      initialMessageToken = "token-1",
+      initialMessageSent = false,
+    )
+    editor.flushPendingInitialMessageIfInitialized()
+
+    file.updateInitialMessageMetadata(
+      initialComposedMessage = "Second draft",
+      initialMessageToken = "token-2",
+      initialMessageSent = false,
+    )
+    editor.flushPendingInitialMessageIfInitialized()
+
+    terminalTabs.tab.setSessionState(TerminalViewSessionState.Running)
+    waitForCondition { terminalTabs.tab.sentTexts.size == 1 }
+
+    assertThat(file.initialMessageSent).isTrue()
+    assertThat(terminalTabs.tab.sentTexts)
+      .containsExactly(SentTerminalText("Second draft", shouldExecute = true))
+  }
+
+  @Test
+  fun terminatedSessionDoesNotSendInitialMessage() {
+    val terminalTabs = FakeAgentChatTerminalTabs()
+    val file = testFile().also {
+      it.updateInitialMessageMetadata(
+        initialComposedMessage = "Do not send",
+        initialMessageToken = "token-term",
+        initialMessageSent = false,
+      )
+    }
+    val editor = testEditor(file = file, terminalTabs = terminalTabs)
+
+    editor.selectNotify()
+    terminalTabs.tab.setSessionState(TerminalViewSessionState.Terminated)
+    Thread.sleep(100)
+
+    editor.flushPendingInitialMessageIfInitialized()
+    assertThat(file.initialMessageSent).isFalse()
+    assertThat(terminalTabs.tab.sentTexts).isEmpty()
+  }
+
+  @Test
+  fun timeoutReadinessStillSendsInitialMessage() {
+    val terminalTabs = FakeAgentChatTerminalTabs()
+    terminalTabs.tab.readinessResult = AgentChatTerminalInputReadiness.TIMEOUT
+    val file = testFile().also {
+      it.updateInitialMessageMetadata(
+        initialComposedMessage = "Send even if output is silent",
+        initialMessageToken = "token-timeout",
+        initialMessageSent = false,
+      )
+    }
+    val editor = testEditor(file = file, terminalTabs = terminalTabs)
+
+    editor.selectNotify()
+    terminalTabs.tab.setSessionState(TerminalViewSessionState.Running)
+    waitForCondition { terminalTabs.tab.sentTexts.size == 1 }
+
+    assertThat(file.initialMessageSent).isTrue()
+    assertThat(terminalTabs.tab.sentTexts)
+      .containsExactly(SentTerminalText("Send even if output is silent", shouldExecute = true))
+  }
+
+  @Test
+  fun codexPlanModeTimeoutReadinessWaitsWithoutSending() {
+    val terminalTabs = FakeAgentChatTerminalTabs()
+    terminalTabs.tab.readinessResult = AgentChatTerminalInputReadiness.TIMEOUT
+    val file = testFile().also {
+      it.updateInitialMessageMetadata(
+        initialComposedMessage = "/plan Send only after explicit readiness",
+        initialMessageToken = "token-plan-timeout",
+        initialMessageSent = false,
+        initialMessageTimeoutPolicy = AgentInitialMessageTimeoutPolicy.REQUIRE_EXPLICIT_READINESS,
+      )
+    }
+    val editor = testEditor(file = file, terminalTabs = terminalTabs)
+
+    editor.selectNotify()
+    terminalTabs.tab.setSessionState(TerminalViewSessionState.Running)
+    Thread.sleep(100)
+
+    assertThat(file.initialMessageSent).isFalse()
+    assertThat(terminalTabs.tab.sentTexts).isEmpty()
+    Disposer.dispose(editor)
+  }
+
+  @Test
+  fun codexPlanModeTimeoutThenReadySendsInitialMessageOnce() {
+    val terminalTabs = FakeAgentChatTerminalTabs()
+    terminalTabs.tab.enqueueReadiness(
+      AgentChatTerminalInputReadiness.TIMEOUT,
+      AgentChatTerminalInputReadiness.READY,
+    )
+    val file = testFile().also {
+      it.updateInitialMessageMetadata(
+        initialComposedMessage = "/plan Send after retry",
+        initialMessageToken = "token-plan-timeout-ready",
+        initialMessageSent = false,
+        initialMessageTimeoutPolicy = AgentInitialMessageTimeoutPolicy.REQUIRE_EXPLICIT_READINESS,
+      )
+    }
+    val editor = testEditor(file = file, terminalTabs = terminalTabs)
+
+    editor.selectNotify()
+    terminalTabs.tab.setSessionState(TerminalViewSessionState.Running)
+    waitForCondition { terminalTabs.tab.sentTexts.size == 1 }
+
+    assertThat(file.initialMessageSent).isTrue()
+    assertThat(terminalTabs.tab.sentTexts)
+      .containsExactly(SentTerminalText("/plan Send after retry", shouldExecute = true))
+  }
+
+  @Test
+  fun codexPlannerPrefixStillFallsBackOnTimeout() {
+    val terminalTabs = FakeAgentChatTerminalTabs()
+    terminalTabs.tab.readinessResult = AgentChatTerminalInputReadiness.TIMEOUT
+    val file = testFile().also {
+      it.updateInitialMessageMetadata(
+        initialComposedMessage = "/planner still fallback",
+        initialMessageToken = "token-planner-timeout",
+        initialMessageSent = false,
+      )
+    }
+    val editor = testEditor(file = file, terminalTabs = terminalTabs)
+
+    editor.selectNotify()
+    terminalTabs.tab.setSessionState(TerminalViewSessionState.Running)
+    waitForCondition { terminalTabs.tab.sentTexts.size == 1 }
+
+    assertThat(file.initialMessageSent).isTrue()
+    assertThat(terminalTabs.tab.sentTexts)
+      .containsExactly(SentTerminalText("/planner still fallback", shouldExecute = true))
+  }
+
+  @Test
+  fun nonCodexPlanCommandStillFallsBackOnTimeout() {
+    val terminalTabs = FakeAgentChatTerminalTabs()
+    terminalTabs.tab.readinessResult = AgentChatTerminalInputReadiness.TIMEOUT
+    val file = testFile(
+      threadIdentity = "CLAUDE:thread-1",
+      shellCommand = listOf("claude", "--resume", "thread-1"),
+    ).also {
+      it.updateInitialMessageMetadata(
+        initialComposedMessage = "/plan fallback for non-codex",
+        initialMessageToken = "token-non-codex-timeout",
+        initialMessageSent = false,
+      )
+    }
+    val editor = testEditor(file = file, terminalTabs = terminalTabs)
+
+    editor.selectNotify()
+    terminalTabs.tab.setSessionState(TerminalViewSessionState.Running)
+    waitForCondition { terminalTabs.tab.sentTexts.size == 1 }
+
+    assertThat(file.initialMessageSent).isTrue()
+    assertThat(terminalTabs.tab.sentTexts)
+      .containsExactly(SentTerminalText("/plan fallback for non-codex", shouldExecute = true))
+  }
+
+  @Test
+  fun timeoutPolicyUsesLatestInitialMessageMetadata() {
+    val terminalTabs = FakeAgentChatTerminalTabs()
+    terminalTabs.tab.readinessResult = AgentChatTerminalInputReadiness.TIMEOUT
+    val file = testFile()
+    val editor = testEditor(file = file, terminalTabs = terminalTabs)
+
+    editor.selectNotify()
+    file.updateInitialMessageMetadata(
+      initialComposedMessage = "Fallback candidate",
+      initialMessageToken = "token-timeout-latest-1",
+      initialMessageSent = false,
+    )
+    editor.flushPendingInitialMessageIfInitialized()
+
+    file.updateInitialMessageMetadata(
+      initialComposedMessage = "/plan Wait for readiness",
+      initialMessageToken = "token-timeout-latest-2",
+      initialMessageSent = false,
+      initialMessageTimeoutPolicy = AgentInitialMessageTimeoutPolicy.REQUIRE_EXPLICIT_READINESS,
+    )
+    editor.flushPendingInitialMessageIfInitialized()
+
+    terminalTabs.tab.setSessionState(TerminalViewSessionState.Running)
+    Thread.sleep(100)
+
+    assertThat(file.initialMessageSent).isFalse()
+    assertThat(terminalTabs.tab.sentTexts).isEmpty()
+    Disposer.dispose(editor)
+  }
+
+  @Test
+  fun slashNewTrackerIgnoresPartialCommandsAndHandlesBackspaceCorrection() {
+    val tracker = AgentChatTerminalCommandTracker()
+
+    "/new branch".forEach { tracker.record(keyTyped(it)) }
+    assertThat(tracker.record(keyPressed(KeyEvent.VK_ENTER))).isEqualTo("/new branch")
+
+    "/newx".forEach { tracker.record(keyTyped(it)) }
+    tracker.record(keyPressed(KeyEvent.VK_BACK_SPACE))
+    assertThat(tracker.record(keyPressed(KeyEvent.VK_ENTER))).isEqualTo("/new")
+
+    "echo /new".forEach { tracker.record(keyTyped(it)) }
+    assertThat(tracker.record(keyPressed(KeyEvent.VK_ENTER))).isEqualTo("echo /new")
   }
 }
 
@@ -154,12 +379,28 @@ private class FakeAgentChatTerminalTab : AgentChatTerminalTab {
   override val coroutineScope: CoroutineScope = object : CoroutineScope {
     override val coroutineContext = Job()
   }
-  override val keyEventsFlow: Flow<*> = emptyFlow<Unit>()
+  private val mutableSessionState: MutableStateFlow<TerminalViewSessionState> = MutableStateFlow(TerminalViewSessionState.NotStarted)
+  override val sessionState: StateFlow<TerminalViewSessionState> = mutableSessionState
+  override val keyEventsFlow: Flow<TerminalKeyEvent> = emptyFlow()
+  var readinessResult: AgentChatTerminalInputReadiness = AgentChatTerminalInputReadiness.READY
+  private val readinessQueue: ArrayDeque<AgentChatTerminalInputReadiness> = ArrayDeque()
 
   @JvmField val sentTexts: MutableList<SentTerminalText> = mutableListOf()
 
+  fun enqueueReadiness(vararg readiness: AgentChatTerminalInputReadiness) {
+    readinessQueue.addAll(readiness.asList())
+  }
+
+  fun setSessionState(state: TerminalViewSessionState) {
+    mutableSessionState.value = state
+  }
+
   override fun sendText(text: String, shouldExecute: Boolean) {
     sentTexts += SentTerminalText(text, shouldExecute)
+  }
+
+  override suspend fun awaitInitialMessageReadiness(timeoutMs: Long, idleMs: Long): AgentChatTerminalInputReadiness {
+    return if (readinessQueue.isEmpty()) readinessResult else readinessQueue.removeFirst()
   }
 }
 
@@ -168,15 +409,30 @@ private data class SentTerminalText(
   @JvmField val shouldExecute: Boolean,
 )
 
-private fun testFile(): AgentChatVirtualFile {
+private fun testFile(
+  threadIdentity: String = "CODEX:thread-1",
+  shellCommand: List<String> = listOf("codex", "resume", "thread-1"),
+): AgentChatVirtualFile {
   return AgentChatVirtualFile(
     projectPath = "/work/project-a",
-    threadIdentity = "CODEX:thread-1",
-    shellCommand = listOf("codex", "resume", "thread-1"),
+    threadIdentity = threadIdentity,
+    shellCommand = shellCommand,
     threadId = "thread-1",
     threadTitle = "Thread",
     subAgentId = null,
     projectHash = "hash-1",
+  )
+}
+
+private fun testEditor(
+  file: AgentChatVirtualFile = testFile(),
+  terminalTabs: AgentChatTerminalTabs = FakeAgentChatTerminalTabs(),
+): AgentChatFileEditor {
+  return AgentChatFileEditor(
+    project = testProject(),
+    file = file,
+    terminalTabs = terminalTabs,
+    tabSnapshotWriter = AgentChatTabSnapshotWriter { },
   )
 }
 
@@ -193,6 +449,14 @@ private fun testProject(): Project {
   return Proxy.newProxyInstance(Project::class.java.classLoader, arrayOf(Project::class.java), handler) as Project
 }
 
+private fun keyTyped(keyChar: Char): KeyEvent {
+  return KeyEvent(JPanel(), KeyEvent.KEY_TYPED, 0L, 0, KeyEvent.VK_UNDEFINED, keyChar)
+}
+
+private fun keyPressed(keyCode: Int): KeyEvent {
+  return KeyEvent(JPanel(), KeyEvent.KEY_PRESSED, 0L, 0, keyCode, KeyEvent.CHAR_UNDEFINED)
+}
+
 private fun defaultValue(returnType: Class<*>): Any? {
   return when {
     !returnType.isPrimitive -> null
@@ -206,4 +470,15 @@ private fun defaultValue(returnType: Class<*>): Any? {
     returnType == Char::class.javaPrimitiveType -> '\u0000'
     else -> null
   }
+}
+
+private fun waitForCondition(timeoutMs: Long = 2_000, condition: () -> Boolean) {
+  val deadline = System.currentTimeMillis() + timeoutMs
+  while (System.currentTimeMillis() < deadline) {
+    if (condition()) {
+      return
+    }
+    Thread.sleep(10)
+  }
+  throw AssertionError("Condition was not satisfied within ${timeoutMs}ms")
 }

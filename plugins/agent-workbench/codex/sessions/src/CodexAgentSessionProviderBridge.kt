@@ -7,9 +7,14 @@ import com.intellij.agent.workbench.codex.sessions.backend.appserver.SharedCodex
 import com.intellij.agent.workbench.common.icons.AgentWorkbenchCommonIcons
 import com.intellij.agent.workbench.sessions.core.AgentSessionLaunchMode
 import com.intellij.agent.workbench.sessions.core.AgentSessionProvider
+import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptInitialMessageRequest
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessagePlan
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessageStartupPolicy
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessageTimeoutPolicy
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionLaunchSpec
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionProviderBridge
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionSource
+import com.intellij.agent.workbench.sessions.core.providers.AgentSessionTerminalLaunchSpec
 import com.intellij.openapi.components.serviceAsync
 import javax.swing.Icon
 
@@ -45,28 +50,66 @@ internal class CodexAgentSessionProviderBridge(
 
   override fun isCliAvailable(): Boolean = CodexCliUtils.findExecutable() != null
 
-  override fun buildResumeCommand(sessionId: String): List<String> = listOf(CodexCliUtils.CODEX_COMMAND, "resume", sessionId)
-
-  override fun buildNewSessionCommand(mode: AgentSessionLaunchMode): List<String> {
-    return if (mode == AgentSessionLaunchMode.YOLO) {
-      listOf(CodexCliUtils.CODEX_COMMAND, "--full-auto")
-    }
-    else {
-      listOf(CodexCliUtils.CODEX_COMMAND)
-    }
+  override fun buildResumeLaunchSpec(sessionId: String): AgentSessionTerminalLaunchSpec {
+    return AgentSessionTerminalLaunchSpec(
+      command = listOf(CodexCliUtils.CODEX_COMMAND, "-c", CODEX_AUTO_UPDATE_CONFIG, "resume", sessionId),
+    )
   }
 
-  override fun buildNewEntryCommand(): List<String> = listOf(CodexCliUtils.CODEX_COMMAND)
+  override fun buildNewSessionLaunchSpec(mode: AgentSessionLaunchMode): AgentSessionTerminalLaunchSpec {
+    val command = if (mode == AgentSessionLaunchMode.YOLO) {
+      listOf(CodexCliUtils.CODEX_COMMAND, "-c", CODEX_AUTO_UPDATE_CONFIG, "--full-auto")
+    }
+    else {
+      listOf(CodexCliUtils.CODEX_COMMAND, "-c", CODEX_AUTO_UPDATE_CONFIG)
+    }
+    return AgentSessionTerminalLaunchSpec(command = command)
+  }
 
-  override fun buildCommandWithInitialPrompt(baseCommand: List<String>, prompt: String): List<String> {
-    return baseCommand + listOf("--", prompt)
+  override fun buildNewEntryLaunchSpec(): AgentSessionTerminalLaunchSpec {
+    return AgentSessionTerminalLaunchSpec(
+      command = listOf(CodexCliUtils.CODEX_COMMAND, "-c", CODEX_AUTO_UPDATE_CONFIG),
+    )
+  }
+
+  override fun buildLaunchSpecWithInitialPrompt(
+    baseLaunchSpec: AgentSessionTerminalLaunchSpec,
+    prompt: String,
+  ): AgentSessionTerminalLaunchSpec {
+    return baseLaunchSpec.copy(command = baseLaunchSpec.command + listOf("--", prompt))
+  }
+
+  override fun buildInitialMessagePlan(request: AgentPromptInitialMessageRequest): AgentInitialMessagePlan {
+    val basePlan = AgentInitialMessagePlan.composeDefault(request)
+    val normalizedMessage = basePlan.message ?: return basePlan
+    val message = if (request.codexPlanModeEnabled) {
+      ensurePlanModePrefix(normalizedMessage)
+    }
+    else {
+      normalizedMessage
+    }
+    return AgentInitialMessagePlan(
+      message = message,
+      startupPolicy = if (request.codexPlanModeEnabled) {
+        AgentInitialMessageStartupPolicy.POST_START_ONLY
+      }
+      else {
+        AgentInitialMessageStartupPolicy.TRY_STARTUP_COMMAND
+      },
+      timeoutPolicy = if (isPlanModeCommand(message)) {
+        AgentInitialMessageTimeoutPolicy.REQUIRE_EXPLICIT_READINESS
+      }
+      else {
+        AgentInitialMessageTimeoutPolicy.ALLOW_TIMEOUT_FALLBACK
+      },
+    )
   }
 
   @Suppress("UNUSED_PARAMETER")
   override suspend fun createNewSession(path: String, mode: AgentSessionLaunchMode): AgentSessionLaunchSpec {
     return AgentSessionLaunchSpec(
       sessionId = null,
-      command = buildNewSessionCommand(mode),
+      launchSpec = buildNewSessionLaunchSpec(mode),
     )
   }
 
@@ -83,4 +126,26 @@ internal class CodexAgentSessionProviderBridge(
   override fun isCliMissingError(throwable: Throwable): Boolean {
     return throwable is CodexCliNotFoundException
   }
+
+  private fun ensurePlanModePrefix(message: String): String {
+    val normalized = message.trim()
+    if (normalized.isEmpty()) {
+      return PLAN_MODE_COMMAND
+    }
+    if (isPlanModeCommand(normalized)) {
+      return normalized
+    }
+    return "$PLAN_MODE_COMMAND $normalized"
+  }
+
+  private fun isPlanModeCommand(message: String): Boolean {
+    if (!message.startsWith(PLAN_MODE_COMMAND)) {
+      return false
+    }
+    val suffix = message.removePrefix(PLAN_MODE_COMMAND)
+    return suffix.isEmpty() || suffix.first().isWhitespace()
+  }
 }
+
+private const val CODEX_AUTO_UPDATE_CONFIG: String = "check_for_update_on_startup=false"
+private const val PLAN_MODE_COMMAND: String = "/plan"

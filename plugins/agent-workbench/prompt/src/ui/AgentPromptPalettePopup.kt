@@ -3,39 +3,24 @@ package com.intellij.agent.workbench.prompt.ui
 
 // @spec community/plugins/agent-workbench/spec/actions/global-prompt-entry.spec.md
 
-import com.intellij.AbstractBundle
+import com.dynatrace.hash4j.hashing.HashValue128
 import com.intellij.CommonBundle
 import com.intellij.agent.workbench.prompt.AgentPromptBundle
 import com.intellij.agent.workbench.prompt.context.AgentPromptContextResolverService
 import com.intellij.agent.workbench.prompt.context.dataContextOrNull
 import com.intellij.agent.workbench.sessions.core.AgentSessionLaunchMode
-import com.intellij.agent.workbench.sessions.core.AgentSessionProvider
-import com.intellij.agent.workbench.sessions.core.formatAgentSessionRelativeTimeShort
-import com.intellij.agent.workbench.sessions.core.formatAgentSessionThreadTitle
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptContextEnvelopeFormatter
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptContextEnvelopeSummary
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptContextItem
-import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptExistingThreadsSnapshot
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptInitialMessageRequest
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptInvocationData
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptLaunchError
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptLaunchRequest
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptLauncherBridge
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptLaunchers
+import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptProjectPathCandidate
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionProviderBridge
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionProviderBridges
-import com.intellij.agent.workbench.sessions.core.providers.AgentSessionProviderMenuItem
-import com.intellij.agent.workbench.sessions.core.providers.AgentSessionProviderMenuModel
-import com.intellij.agent.workbench.sessions.core.providers.buildAgentSessionProviderMenuModel
-import com.intellij.agent.workbench.sessions.core.providers.hasEntries
-import com.intellij.execution.ui.TagButton
-import com.intellij.icons.AllIcons
-import com.intellij.ide.DataManager
-import com.intellij.openapi.actionSystem.ActionUpdateThread
-import com.intellij.openapi.actionSystem.AnAction
-import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.DefaultActionGroup
-import com.intellij.openapi.actionSystem.Separator
 import com.intellij.openapi.application.UI
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
@@ -44,48 +29,27 @@ import com.intellij.openapi.ui.popup.JBPopup
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.ui.popup.JBPopupListener
 import com.intellij.openapi.ui.popup.LightweightWindowEvent
+import com.intellij.ui.ColoredListCellRenderer
+import com.intellij.ui.SimpleTextAttributes
+import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
-import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.NamedColorUtil
-import com.intellij.util.ui.UIUtil
-import com.intellij.util.ui.WrapLayout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.onStart
-import kotlinx.coroutines.launch
 import org.jetbrains.annotations.Nls
-import org.jetbrains.annotations.NonNls
-import java.awt.FlowLayout
-import java.awt.event.ActionEvent
-import java.awt.event.InputEvent
-import java.awt.event.KeyEvent
-import java.util.Locale
-import java.util.ResourceBundle
-import java.util.concurrent.atomic.AtomicInteger
-import javax.swing.AbstractAction
-import javax.swing.DefaultListModel
-import javax.swing.Icon
-import javax.swing.JButton
-import javax.swing.JComponent
+import javax.swing.JList
 import javax.swing.JPanel
-import javax.swing.KeyStroke
 import javax.swing.event.ChangeListener
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
-import javax.swing.text.DefaultEditorKit
 
 private const val CONTEXT_SOFT_CAP_CHARS = AgentPromptContextEnvelopeFormatter.DEFAULT_SOFT_CAP_CHARS
-private const val MAX_EXISTING_TASKS = 200
-private const val CONTEXT_CHIP_GAP = 6
 
 internal class AgentPromptPalettePopup(
   private val invocationData: AgentPromptInvocationData,
@@ -95,36 +59,31 @@ internal class AgentPromptPalettePopup(
   private val project: Project = invocationData.project
   private val contextResolverService: AgentPromptContextResolverService = project.service()
   private val uiStateService: AgentPromptUiSessionStateService = project.service()
+  private val sessionsMessageResolver = AgentPromptSessionsMessageResolver(AgentPromptPalettePopup::class.java.classLoader)
 
   private val promptArea = JBTextArea(6, 100)
+  private val contextChips = AgentPromptContextChipsComponent(::removeContextEntry)
+
   private lateinit var tabbedPane: JBTabbedPane
   private lateinit var providerIconLabel: JBLabel
-
-  private lateinit var existingTaskListModel: DefaultListModel<ThreadEntry>
-  private lateinit var existingTaskList: JBList<ThreadEntry>
   private lateinit var existingTaskScrollPane: JBScrollPane
-
-  private val contextChipsPanel = JPanel(WrapLayout(FlowLayout.LEFT, JBUI.scale(CONTEXT_CHIP_GAP), JBUI.scale(CONTEXT_CHIP_GAP))).apply {
-    isOpaque = false
-  }
-
+  private lateinit var codexPlanModeCheckBox: JBCheckBox
   private lateinit var footerLabel: JBLabel
+  private lateinit var providerSelector: AgentPromptProviderSelector
+  private lateinit var existingTaskController: AgentPromptExistingTaskController
 
   private var popup: JBPopup? = null
   private var popupActive: Boolean = false
   private var clearDraftOnClose: Boolean = false
   private var canSubmitNow: Boolean = false
   private var contextEntries: List<ContextEntry> = emptyList()
-  private var providerEntries: List<ProviderEntry> = emptyList()
-  private var providerMenuModel: AgentSessionProviderMenuModel = AgentSessionProviderMenuModel(emptyList(), emptyList())
-  private var selectedProvider: ProviderEntry? = null
-  private var allExistingTaskEntries: List<ThreadEntry> = emptyList()
-  private var selectedExistingTaskId: String? = null
+  private var initialContextFingerprint: HashValue128? = null
+  private val removedLogicalItemIds = LinkedHashSet<String>()
+  private var selectedWorkingProjectPath: String? = null
   private var existingTaskSearchQuery: String = ""
-  private val threadLoadVersion = AtomicInteger(0)
+
   @Suppress("RAW_SCOPE_CREATION")
   private val popupScope = CoroutineScope(SupervisorJob() + Dispatchers.UI)
-  private var existingTasksObservationJob: Job? = null
 
   fun show() {
     promptArea.lineWrap = true
@@ -158,8 +117,7 @@ internal class AgentPromptPalettePopup(
       override fun onClosed(event: LightweightWindowEvent) {
         popupActive = false
         popup = null
-        existingTasksObservationJob?.cancel()
-        existingTasksObservationJob = null
+        existingTaskController.dispose()
         popupScope.cancel("Agent prompt popup closed")
         if (clearDraftOnClose) {
           uiStateService.clearDraft()
@@ -175,29 +133,60 @@ internal class AgentPromptPalettePopup(
   }
 
   private fun createContentPanel(): JPanel {
+    val planModeCheckBox = createCodexPlanModeCheckBox()
     val view = createAgentPromptPaletteView(
       promptArea = promptArea,
-      contextChipsPanel = contextChipsPanel,
+      contextChipsPanel = contextChips.component,
+      codexPlanModeCheckBox = planModeCheckBox,
       onProviderIconClicked = ::showProviderChooser,
       onExistingTaskSelected = ::onExistingTaskSelected,
     )
     tabbedPane = view.tabbedPane
     providerIconLabel = view.providerIconLabel
-    existingTaskListModel = view.existingTaskListModel
-    existingTaskList = view.existingTaskList
     existingTaskScrollPane = view.existingTaskScrollPane
+    codexPlanModeCheckBox = checkNotNull(view.codexPlanModeCheckBox)
     footerLabel = view.footerLabel
+    providerSelector = AgentPromptProviderSelector(
+      invocationData = invocationData,
+      providerIconLabel = providerIconLabel,
+      codexPlanModeCheckBox = codexPlanModeCheckBox,
+      providersProvider = providersProvider,
+      sessionsMessageResolver = sessionsMessageResolver,
+    )
+    existingTaskController = AgentPromptExistingTaskController(
+      existingTaskListModel = view.existingTaskListModel,
+      existingTaskList = view.existingTaskList,
+      popupScope = popupScope,
+      sessionsMessageResolver = sessionsMessageResolver,
+      onStateChanged = ::updateSendAvailability,
+    )
     return view.rootPanel
   }
 
+  private fun createCodexPlanModeCheckBox(): JBCheckBox {
+    return JBCheckBox(AgentPromptBundle.message("popup.plan.checkbox"), true).apply {
+      isFocusable = false
+    }
+  }
+
   private fun onExistingTaskSelected(selected: ThreadEntry) {
-    selectedExistingTaskId = selected.id
+    existingTaskController.onUserSelected(selected)
     updateSendAvailability()
     refreshFooterHintForCurrentState()
   }
 
   private fun attachHandlers() {
-    installPromptEnterHandlers()
+    installPromptEnterHandlers(
+      promptArea = promptArea,
+      canSubmit = { canSubmitNow },
+      isTabQueueEnabled = {
+        isTabQueueShortcutEnabled(
+          targetMode = currentTargetMode(),
+          selectedProvider = providerSelector.selectedProvider?.bridge?.provider,
+        )
+      },
+      onSubmit = ::submit,
+    )
 
     tabbedPane.addChangeListener(ChangeListener {
       updateTargetModeUi()
@@ -214,30 +203,14 @@ internal class AgentPromptPalettePopup(
 
   private fun onPromptChanged() {
     updateSendAvailability()
-    // Clear transient footer messages on user interaction
     clearStatus()
-  }
-
-  private fun installPromptEnterHandlers() {
-    installPromptEnterHandlers(
-      promptArea = promptArea,
-      canSubmit = { canSubmitNow },
-      targetMode = ::currentTargetMode,
-      onSubmit = ::submit,
-      onExistingTaskSubmitDisabled = {
-        showInfo(AgentPromptBundle.message("popup.status.existing.select.task"))
-      },
-    )
   }
 
   private fun updateTargetModeUi() {
     val mode = currentTargetMode()
-    // Prompt editor is shared across both modes; only the existing-task picker visibility changes.
     existingTaskScrollPane.isVisible = mode == PromptTargetMode.EXISTING_TASK
-    if (mode == PromptTargetMode.EXISTING_TASK) {
-      if (allExistingTaskEntries.isEmpty()) {
-        reloadExistingTasks()
-      }
+    if (mode == PromptTargetMode.EXISTING_TASK && !existingTaskController.hasLoadedEntries()) {
+      reloadExistingTasks()
     }
     refreshFooterHintForCurrentState()
   }
@@ -254,286 +227,58 @@ internal class AgentPromptPalettePopup(
   }
 
   private fun refreshProviders() {
-    val bridges = providersProvider().sortedBy { providerPriority(it.provider) }
-    providerMenuModel = buildAgentSessionProviderMenuModel(bridges)
-    providerEntries = bridges.map { bridge ->
-      ProviderEntry(
-        bridge = bridge,
-        displayName = resolveSessionsMessage(bridge.displayNameKey, bridge) ?: providerDisplayName(bridge.provider),
-        isCliAvailable = bridge.isCliAvailable(),
-        icon = providerIcon(bridge),
-      )
-    }
-
-    val currentProviderId = selectedProvider?.bridge?.provider
-    selectedProvider = providerEntries.firstOrNull { it.bridge.provider == currentProviderId }
-      ?: providerEntries.firstOrNull { it.bridge.provider == AgentSessionProvider.CODEX }
-      ?: providerEntries.firstOrNull()
-    updateProviderIconPresentation()
-  }
-
-  private fun updateProviderIconPresentation() {
-    val provider = selectedProvider
-    if (provider == null) {
-      providerIconLabel.icon = AllIcons.Toolwindows.ToolWindowMessages
-      providerIconLabel.toolTipText = AgentPromptBundle.message("popup.provider.selector.tooltip")
-      return
-    }
-
-    providerIconLabel.icon = provider.icon
-    providerIconLabel.toolTipText = provider.displayName
+    providerSelector.refresh()
   }
 
   private fun showProviderChooser() {
-    if (!providerMenuModel.hasEntries()) {
-      showError(AgentPromptBundle.message("popup.error.no.providers"))
-      return
-    }
-
-    val group = DefaultActionGroup()
-    providerMenuModel.standardItems.forEach { item ->
-      group.add(createProviderSelectionAction(item))
-    }
-    if (providerMenuModel.yoloItems.isNotEmpty()) {
-      if (providerMenuModel.standardItems.isNotEmpty()) {
-        group.add(Separator.getInstance())
+    providerSelector.showChooser(onUnavailable = ::showError) {
+      if (currentTargetMode() == PromptTargetMode.EXISTING_TASK) {
+        existingTaskController.clearSelection()
+        reloadExistingTasks()
       }
-      val yoloSectionName = resolveSessionsMessage("toolwindow.action.new.session.section.auto")
-        ?: AgentPromptBundle.message("popup.provider.section.auto")
-      group.add(Separator.create(yoloSectionName))
-      providerMenuModel.yoloItems.forEach { item ->
-        group.add(createProviderSelectionAction(item))
-      }
+      updateSendAvailability()
+      refreshFooterHintForCurrentState()
     }
-
-    val chooserDataContext = invocationData.dataContextOrNull() ?: DataManager.getInstance().getDataContext(providerIconLabel)
-    JBPopupFactory.getInstance()
-      .createActionGroupPopup(
-        null,
-        group,
-        chooserDataContext,
-        JBPopupFactory.ActionSelectionAid.SPEEDSEARCH,
-        true,
-        null,
-        Int.MAX_VALUE,
-      )
-      .showUnderneathOf(providerIconLabel)
-  }
-
-  private fun createProviderSelectionAction(item: AgentSessionProviderMenuItem): AnAction {
-    val text = resolveSessionsMessage(item.labelKey, item.bridge) ?: item.displayNameFallback()
-    return object : AnAction(text, null, providerIcon(item.bridge)) {
-      override fun update(e: AnActionEvent) {
-        e.presentation.isEnabled = item.isEnabled
-        e.presentation.description = if (item.isEnabled) null else disabledProviderReason(item)
-      }
-
-      override fun actionPerformed(e: AnActionEvent) {
-        if (!item.isEnabled) {
-          return
-        }
-
-        selectedProvider = providerEntries.firstOrNull { it.bridge.provider == item.bridge.provider }
-        updateProviderIconPresentation()
-        if (currentTargetMode() == PromptTargetMode.EXISTING_TASK) {
-          selectedExistingTaskId = null
-          reloadExistingTasks()
-        }
-        updateSendAvailability()
-        refreshFooterHintForCurrentState()
-      }
-
-      override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
-    }
-  }
-
-  private fun AgentSessionProviderMenuItem.displayNameFallback(): @Nls String {
-    return providerEntries.firstOrNull { it.bridge.provider == bridge.provider }?.displayName
-      ?: providerDisplayName(bridge.provider)
-  }
-
-  private fun disabledProviderReason(item: AgentSessionProviderMenuItem): @Nls String {
-    val reasonKey: @NonNls String? = item.disabledReasonKey
-    if (reasonKey != null) {
-      resolveSessionsMessage(reasonKey, item.bridge)?.let { resolved ->
-        return resolved
-      }
-    }
-    return AgentPromptBundle.message("popup.error.provider.unavailable", item.displayNameFallback())
   }
 
   private fun loadInitialContext() {
     val resolved = contextResolverService.collectDefaultContext(invocationData)
-    contextEntries = resolved.map { item -> ContextEntry(item = item, projectBasePath = project.basePath) }
-    rebuildContextChips()
+    val projectPath = resolveWorkingProjectPath(launcherProvider()) ?: project.basePath
+    initialContextFingerprint = computeContextFingerprint(resolved)
+    removedLogicalItemIds.clear()
+    contextEntries = resolved.map { item -> ContextEntry(item = item, projectBasePath = projectPath) }
+    contextChips.render(contextEntries)
   }
 
-  private fun rebuildContextChips() {
-    contextChipsPanel.removeAll()
-    contextEntries.forEach { entry ->
-      contextChipsPanel.add(createContextChip(entry))
-    }
-    contextChipsPanel.revalidate()
-    contextChipsPanel.repaint()
-  }
-
-  private fun createContextChip(entry: ContextEntry): JComponent {
-    return TagButton(entry.displayText) {
-      contextEntries = contextEntries.filterNot { it.id == entry.id }
-      rebuildContextChips()
-      showInfo(AgentPromptBundle.message("popup.status.context.removed"))
-    }.apply {
-      isOpaque = false
-      isFocusable = false
-      // TagButton's inner `styleTag` button is opaque by default; make it non-opaque and
-      // transparent so only the rounded tag shape is painted (no rectangular tile behind it).
-      components.filterIsInstance<JButton>()
-        .filter { it.getClientProperty("styleTag") != null }
-        .forEach {
-          it.isOpaque = false
-          it.background = UIUtil.TRANSPARENT_COLOR
-          it.putClientProperty("JButton.backgroundColor", UIUtil.TRANSPARENT_COLOR)
-        }
-      setToolTip(entry.tooltipText)
-    }
+  private fun removeContextEntry(entry: ContextEntry) {
+    val beforeEntries = contextEntries
+    val updatedEntries = resolveContextEntriesAfterRemoval(beforeEntries, entry.id)
+    removedLogicalItemIds.addAll(
+      collectRemovedLogicalItemIds(
+        beforeEntries = beforeEntries,
+        afterEntries = updatedEntries,
+      )
+    )
+    contextEntries = updatedEntries
+    contextChips.render(contextEntries)
+    showInfo(AgentPromptBundle.message("popup.status.context.removed"))
   }
 
   private fun reloadExistingTasks() {
-    existingTasksObservationJob?.cancel()
-    existingTasksObservationJob = null
-
-    val selectedProviderEntry = selectedProvider
-    if (selectedProviderEntry == null) {
-      updateExistingTaskListState(AgentPromptBundle.message("popup.error.no.providers"))
-      allExistingTaskEntries = emptyList()
-      selectedExistingTaskId = null
-      updateSendAvailability()
-      return
-    }
-
-    if (!selectedProviderEntry.isCliAvailable) {
-      updateExistingTaskListState(AgentPromptBundle.message("popup.error.provider.unavailable", selectedProviderEntry.displayName))
-      allExistingTaskEntries = emptyList()
-      selectedExistingTaskId = null
-      updateSendAvailability()
-      return
-    }
-
-    val projectPath = project.basePath
-    if (projectPath.isNullOrBlank()) {
-      updateExistingTaskListState(AgentPromptBundle.message("popup.error.project.path"))
-      allExistingTaskEntries = emptyList()
-      selectedExistingTaskId = null
-      updateSendAvailability()
-      return
-    }
-
-    updateExistingTaskListState(AgentPromptBundle.message("popup.existing.loading"))
-    allExistingTaskEntries = emptyList()
-    existingTaskListModel.clear()
-
     val launcher = launcherProvider()
-    if (launcher == null) {
-      updateExistingTaskListState(AgentPromptBundle.message("popup.error.no.launcher"))
-      selectedExistingTaskId = null
-      updateSendAvailability()
-      return
-    }
-
-    val requestVersion = threadLoadVersion.incrementAndGet()
-    existingTasksObservationJob = popupScope.launch {
-      launcher.observeExistingThreads(projectPath = projectPath, provider = selectedProviderEntry.bridge.provider)
-        .onStart {
-          launcher.refreshExistingThreads(projectPath = projectPath, provider = selectedProviderEntry.bridge.provider)
-        }
-        .catch {
-          if (!popupActive || requestVersion != threadLoadVersion.get()) {
-            return@catch
-          }
-          allExistingTaskEntries = emptyList()
-          selectedExistingTaskId = null
-          existingTaskListModel.clear()
-          existingTaskList.emptyText.text = AgentPromptBundle.message("popup.existing.error")
-          updateSendAvailability()
-        }
-        .collectLatest { snapshot ->
-          if (!popupActive || requestVersion != threadLoadVersion.get()) {
-            return@collectLatest
-          }
-          applyExistingTaskSnapshot(snapshot)
-        }
-    }
-  }
-
-  private fun applyExistingTaskSnapshot(snapshot: AgentPromptExistingThreadsSnapshot) {
-    if (snapshot.hasError) {
-      allExistingTaskEntries = emptyList()
-      selectedExistingTaskId = null
-      existingTaskListModel.clear()
-      existingTaskList.emptyText.text = AgentPromptBundle.message("popup.existing.error")
-      updateSendAvailability()
-      return
-    }
-
-    val loaded = formatExistingTaskEntries(snapshot)
-    allExistingTaskEntries = loaded
-    if (selectedExistingTaskId != null && loaded.none { it.id == selectedExistingTaskId }) {
-      selectedExistingTaskId = null
-    }
-    existingTaskListModel.clear()
-    loaded.forEach { existingTaskListModel.addElement(it) }
-    if (loaded.isEmpty()) {
-      existingTaskList.emptyText.text = when {
-        snapshot.isLoading || !snapshot.hasLoaded -> AgentPromptBundle.message("popup.existing.loading")
-        else -> AgentPromptBundle.message("popup.existing.empty")
-      }
-    }
-    else {
-      existingTaskList.emptyText.clear()
-      val selectedIdx = loaded.indexOfFirst { it.id == selectedExistingTaskId }
-      if (selectedIdx >= 0) {
-        existingTaskList.selectedIndex = selectedIdx
-      }
-    }
-    updateSendAvailability()
-  }
-
-  private fun formatExistingTaskEntries(snapshot: AgentPromptExistingThreadsSnapshot): List<ThreadEntry> {
-    val now = System.currentTimeMillis()
-    val nowLabel = resolveSessionsMessage("toolwindow.time.now") ?: AgentPromptBundle.message("popup.time.now")
-    val unknownLabel = resolveSessionsMessage("toolwindow.time.unknown") ?: AgentPromptBundle.message("popup.time.unknown")
-    return snapshot.threads
-      .asSequence()
-      .sortedByDescending { thread -> thread.updatedAt }
-      .take(MAX_EXISTING_TASKS)
-      .map { thread ->
-        ThreadEntry(
-          id = thread.id,
-          displayText = formatAgentSessionThreadTitle(threadId = thread.id, title = thread.title) { idPrefix ->
-            resolveSessionsMessage("toolwindow.thread.fallback.title", null, idPrefix)
-              ?: AgentPromptBundle.message("popup.existing.fallback.title", idPrefix)
-          },
-          secondaryText = "  " + formatAgentSessionRelativeTimeShort(
-            timestamp = thread.updatedAt,
-            now = now,
-            nowLabel = nowLabel,
-            unknownLabel = unknownLabel,
-          ),
-        )
-      }
-      .toList()
-  }
-
-  private fun updateExistingTaskListState(message: @Nls String) {
-    existingTaskListModel.clear()
-    existingTaskList.emptyText.text = message
+    existingTaskController.reload(
+      selectedProviderEntry = providerSelector.selectedProvider,
+      launcher = launcher,
+      projectPath = resolveWorkingProjectPath(launcher),
+      isPopupActive = { popupActive },
+    )
   }
 
   private fun updateSendAvailability() {
-    val selectedProviderEntry = selectedProvider
+    val selectedProviderEntry = providerSelector.selectedProvider
     val hasPrompt = promptArea.text.trim().isNotEmpty()
-    val hasProjectPath = !project.basePath.isNullOrBlank()
-    val hasExistingTaskTarget = !selectedExistingTaskId.isNullOrBlank()
+    val hasProjectPath = resolveWorkingProjectPath(launcherProvider()) != null
+    val hasExistingTaskTarget = !existingTaskController.selectedExistingTaskId.isNullOrBlank()
 
     val submitPrerequisitesMet = hasPrompt && hasProjectPath && selectedProviderEntry != null && selectedProviderEntry.isCliAvailable
     canSubmitNow = when (currentTargetMode()) {
@@ -544,61 +289,69 @@ internal class AgentPromptPalettePopup(
 
   private fun submit() {
     val openedPopup = popup ?: return
+    val selectedProviderEntry = providerSelector.selectedProvider
+    val launcher = launcherProvider()
+    val projectPath = resolveWorkingProjectPath(launcher)
+    val validationErrorKey = resolveSubmitValidationErrorMessageKey(
+      targetMode = currentTargetMode(),
+      prompt = promptArea.text,
+      selectedProvider = selectedProviderEntry?.bridge?.provider,
+      isProviderCliAvailable = selectedProviderEntry?.isCliAvailable == true,
+      hasProjectPath = projectPath != null,
+      hasLauncher = launcher != null,
+      selectedExistingTaskId = existingTaskController.selectedExistingTaskId,
+    )
+    if (validationErrorKey != null) {
+      if (validationErrorKey == "popup.error.project.path" &&
+          launcher != null &&
+          promptWorkingProjectPathSelection(launcher) { submit() }) {
+        return
+      }
+      val message = if (validationErrorKey == "popup.error.provider.unavailable") {
+        AgentPromptBundle.message(validationErrorKey, selectedProviderEntry?.displayName ?: "")
+      }
+      else {
+        AgentPromptBundle.message(validationErrorKey)
+      }
+      showError(message)
+      return
+    }
 
     val prompt = promptArea.text.trim()
-    if (prompt.isEmpty()) {
-      showError(AgentPromptBundle.message("popup.error.empty.prompt"))
-      return
-    }
+    val providerEntry = selectedProviderEntry ?: return
+    val effectiveProjectPath = projectPath ?: return
 
-    val selectedProviderEntry = selectedProvider
-    if (selectedProviderEntry == null) {
-      showError(AgentPromptBundle.message("popup.error.no.providers"))
-      return
-    }
-    if (!selectedProviderEntry.isCliAvailable) {
-      showError(AgentPromptBundle.message("popup.error.provider.unavailable", selectedProviderEntry.displayName))
-      return
-    }
-
-    val projectPath = project.basePath
-    if (projectPath.isNullOrBlank()) {
-      showError(AgentPromptBundle.message("popup.error.project.path"))
-      return
-    }
-
-    val selectedContextItems = contextEntries.map { it.item }
-    val contextSelection = resolveContextSelection(selectedContextItems) ?: return
-
-    val launcher = launcherProvider()
-    if (launcher == null) {
-      showError(AgentPromptBundle.message("popup.error.no.launcher"))
-      return
-    }
+    val selectedContextItems = contextEntries.map(ContextEntry::item)
+    val contextSelection = resolveContextSelection(selectedContextItems, effectiveProjectPath) ?: return
+    val launcherBridge = launcher ?: return
 
     val targetThreadId = when (currentTargetMode()) {
       PromptTargetMode.NEW_TASK -> null
-      PromptTargetMode.EXISTING_TASK -> selectedExistingTaskId ?: run {
-        showInfo(AgentPromptBundle.message("popup.status.existing.select.task"))
-        return
-      }
+      PromptTargetMode.EXISTING_TASK -> existingTaskController.selectedExistingTaskId ?: return
     }
+    val effectiveCodexPlanModeEnabled = resolveEffectiveCodexPlanModeEnabled(
+      selectedProvider = providerEntry.bridge.provider,
+      isCodexPlanModeSelected = codexPlanModeCheckBox.isSelected,
+      targetMode = currentTargetMode(),
+      selectedThreadActivity = existingTaskController.selectedEntry()?.activity,
+    )
 
     val request = AgentPromptLaunchRequest(
-      provider = selectedProviderEntry.bridge.provider,
-      projectPath = projectPath,
+      provider = providerEntry.bridge.provider,
+      projectPath = effectiveProjectPath,
       launchMode = AgentSessionLaunchMode.STANDARD,
       initialMessageRequest = AgentPromptInitialMessageRequest(
         prompt = prompt,
-        projectPath = projectPath,
+        projectPath = effectiveProjectPath,
         contextItems = contextSelection.items,
         contextEnvelopeSummary = contextSelection.summary,
+        codexPlanModeEnabled = effectiveCodexPlanModeEnabled,
       ),
       targetThreadId = targetThreadId,
       preferredDedicatedFrame = null,
     )
 
-    val result = launcher.launch(request)
+    val result = launcherBridge.launch(request)
     if (result.launched) {
       clearDraftOnClose = true
       openedPopup.cancel()
@@ -615,7 +368,7 @@ internal class AgentPromptPalettePopup(
     showError(errorMessage)
   }
 
-  private fun resolveContextSelection(items: List<AgentPromptContextItem>): ContextSelection? {
+  private fun resolveContextSelection(items: List<AgentPromptContextItem>, projectPath: String?): ContextSelection? {
     val baseSummary = AgentPromptContextEnvelopeSummary(
       softCapChars = CONTEXT_SOFT_CAP_CHARS,
       softCapExceeded = false,
@@ -629,7 +382,7 @@ internal class AgentPromptPalettePopup(
     val serializedChars = AgentPromptContextEnvelopeFormatter.measureContextBlockChars(
       items = normalizedItems,
       summary = baseSummary,
-      projectPath = project.basePath,
+      projectPath = projectPath,
     )
     if (serializedChars <= CONTEXT_SOFT_CAP_CHARS) {
       return ContextSelection(items = normalizedItems, summary = baseSummary)
@@ -657,11 +410,12 @@ internal class AgentPromptPalettePopup(
           autoTrimApplied = false,
         ),
       )
+
       1 -> {
         val trimResult = AgentPromptContextEnvelopeFormatter.applySoftCap(
           items = normalizedItems,
           softCapChars = CONTEXT_SOFT_CAP_CHARS,
-          projectPath = project.basePath,
+          projectPath = projectPath,
         )
         ContextSelection(
           items = trimResult.items,
@@ -672,91 +426,128 @@ internal class AgentPromptPalettePopup(
           ),
         )
       }
+
       else -> null
     }
   }
 
+  private fun resolveWorkingProjectPath(launcher: AgentPromptLauncherBridge?): String? {
+    selectedWorkingProjectPath?.takeIf { path -> path.isNotBlank() }?.let { path ->
+      return path
+    }
+    return launcher
+      ?.resolveWorkingProjectPath(invocationData)
+      ?.takeIf { path -> path.isNotBlank() }
+  }
+
+  private fun promptWorkingProjectPathSelection(launcher: AgentPromptLauncherBridge, onSelected: () -> Unit): Boolean {
+    val candidates = launcher.listWorkingProjectPathCandidates(invocationData)
+      .asSequence()
+      .filter { candidate -> candidate.path.isNotBlank() }
+      .distinctBy(AgentPromptProjectPathCandidate::path)
+      .toList()
+    if (candidates.isEmpty()) {
+      return false
+    }
+
+    JBPopupFactory.getInstance()
+      .createPopupChooserBuilder(candidates)
+      .setTitle(AgentPromptBundle.message("popup.project.chooser.title"))
+      .setRenderer(object : ColoredListCellRenderer<AgentPromptProjectPathCandidate>() {
+        override fun customizeCellRenderer(
+          list: JList<out AgentPromptProjectPathCandidate>,
+          value: AgentPromptProjectPathCandidate?,
+          index: Int,
+          selected: Boolean,
+          hasFocus: Boolean,
+        ) {
+          if (value == null) {
+            return
+          }
+          append(value.displayName, SimpleTextAttributes.REGULAR_ATTRIBUTES)
+          if (value.displayName != value.path) {
+            append("  ${value.path}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
+          }
+        }
+      })
+      .setItemChosenCallback { candidate ->
+        selectedWorkingProjectPath = candidate.path
+        if (currentTargetMode() == PromptTargetMode.EXISTING_TASK) {
+          existingTaskController.clearSelection()
+          reloadExistingTasks()
+        }
+        updateSendAvailability()
+        onSelected()
+      }
+      .createPopup()
+      .showInBestPositionFor(invocationData.dataContextOrNull() ?: com.intellij.ide.DataManager.getInstance().getDataContext(promptArea))
+
+    return true
+  }
+
   private fun restoreDraft() {
     val draft = uiStateService.loadDraft()
+    val contextRestoreSnapshot = uiStateService.loadContextRestoreSnapshot()
+    val launcher = launcherProvider()
 
     promptArea.text = draft.promptText
-    val persistedProvider = draft.providerId?.let(AgentSessionProvider::fromOrNull)
-    selectedProvider = findProviderEntry(persistedProvider) ?: selectedProvider
-    updateProviderIconPresentation()
+    codexPlanModeCheckBox.isSelected = draft.codexPlanModeEnabled
+    val persistedProvider = resolveRestoredPromptProvider(
+      draftProviderId = draft.providerId,
+      preferredProvider = launcher?.preferredProvider(),
+      availableProviders = providerSelector.availableProviders,
+    )
+    providerSelector.selectProvider(persistedProvider)
 
     setTargetMode(draft.targetMode)
     existingTaskSearchQuery = draft.existingTaskSearch
-    selectedExistingTaskId = draft.selectedExistingTaskId
+    existingTaskController.selectedExistingTaskId = draft.selectedExistingTaskId
+    removedLogicalItemIds.clear()
+    if (contextRestoreSnapshot.contextFingerprint == initialContextFingerprint) {
+      val normalizedRemovedIds = normalizeRemovedContextItemIds(contextRestoreSnapshot.removedContextItemIds)
+      removedLogicalItemIds.addAll(normalizedRemovedIds)
+      val restoredEntries = applyDraftContextRemovals(
+        entries = contextEntries,
+        currentFingerprint = initialContextFingerprint,
+        draftFingerprint = contextRestoreSnapshot.contextFingerprint,
+        removedLogicalItemIds = normalizedRemovedIds,
+      )
+      if (restoredEntries != contextEntries) {
+        contextEntries = restoredEntries
+        contextChips.render(contextEntries)
+      }
+    }
 
     if (draft.targetMode == PromptTargetMode.EXISTING_TASK) {
       reloadExistingTasks()
     }
   }
 
-  private fun findProviderEntry(provider: AgentSessionProvider?): ProviderEntry? {
-    if (provider == null) {
-      return null
-    }
-    return providerEntries.firstOrNull { entry -> entry.bridge.provider == provider }
-  }
-
   private fun saveDraft() {
     uiStateService.saveDraft(
       AgentPromptUiDraft(
         promptText = promptArea.text,
-        providerId = selectedProvider?.bridge?.provider?.value,
+        providerId = providerSelector.selectedProvider?.bridge?.provider?.value,
         targetMode = currentTargetMode(),
         sendMode = PromptSendMode.SEND_NOW,
         existingTaskSearch = existingTaskSearchQuery,
-        selectedExistingTaskId = selectedExistingTaskId,
+        selectedExistingTaskId = existingTaskController.selectedExistingTaskId,
+        codexPlanModeEnabled = codexPlanModeCheckBox.isSelected,
       )
     )
-  }
-
-  private fun providerDisplayName(provider: AgentSessionProvider): String {
-    return when (provider) {
-      AgentSessionProvider.CODEX -> AgentPromptBundle.message("provider.codex")
-      AgentSessionProvider.CLAUDE -> AgentPromptBundle.message("provider.claude")
-      else -> provider.value.replaceFirstChar { char ->
-        if (char.isLowerCase()) char.titlecase() else char.toString()
-      }
-    }
-  }
-
-  private fun providerPriority(provider: AgentSessionProvider): Int {
-    return when (provider) {
-      AgentSessionProvider.CODEX -> 0
-      AgentSessionProvider.CLAUDE -> 1
-      else -> 2
-    }
-  }
-
-  private fun providerIcon(bridge: AgentSessionProviderBridge): Icon {
-    return bridge.icon
-  }
-
-  private fun resolveSessionsMessage(@NonNls key: String, bridge: AgentSessionProviderBridge? = null, vararg params: Any): @Nls String? {
-    val classLoaders = linkedSetOf<ClassLoader>()
-    bridge?.javaClass?.classLoader?.let(classLoaders::add)
-    classLoaders.add(javaClass.classLoader)
-
-    classLoaders.forEach { classLoader ->
-      val bundle = runCatching {
-        ResourceBundle.getBundle("messages.AgentSessionsBundle", Locale.getDefault(), classLoader)
-      }.getOrNull() ?: return@forEach
-
-      val resolved = AbstractBundle.messageOrNull(bundle, key, *params) ?: return@forEach
-      return resolved
-    }
-
-    return null
+    uiStateService.saveContextRestoreSnapshot(
+      AgentPromptUiContextRestoreSnapshot(
+        contextFingerprint = initialContextFingerprint,
+        removedContextItemIds = normalizeRemovedContextItemIds(removedLogicalItemIds),
+      )
+    )
   }
 
   private fun clearStatus() {
     footerLabel.text = AgentPromptBundle.message(
       resolveDefaultFooterHintMessageKey(
         targetMode = currentTargetMode(),
-        selectedProvider = selectedProvider?.bridge?.provider,
+        selectedProvider = providerSelector.selectedProvider?.bridge?.provider,
       )
     )
     footerLabel.foreground = JBUI.CurrentTheme.Advertiser.foreground()
@@ -765,8 +556,8 @@ internal class AgentPromptPalettePopup(
   private fun refreshFooterHintForCurrentState() {
     if (shouldShowExistingTaskSelectionHint(
         targetMode = currentTargetMode(),
-        selectedExistingTaskId = selectedExistingTaskId,
-        selectedProvider = selectedProvider?.bridge?.provider,
+        selectedExistingTaskId = existingTaskController.selectedExistingTaskId,
+        selectedProvider = providerSelector.selectedProvider?.bridge?.provider,
       )) {
       showInfo(AgentPromptBundle.message("popup.status.existing.select.task"))
       return
@@ -790,51 +581,3 @@ private data class ContextSelection(
   @JvmField val items: List<AgentPromptContextItem>,
   @JvmField val summary: AgentPromptContextEnvelopeSummary,
 )
-
-internal fun resolveDefaultFooterHintMessageKey(
-  targetMode: PromptTargetMode,
-  selectedProvider: AgentSessionProvider?,
-): @NonNls String {
-  return if (targetMode == PromptTargetMode.EXISTING_TASK && selectedProvider == AgentSessionProvider.CODEX) {
-    "popup.footer.hint.existing.codex"
-  }
-  else {
-    "popup.footer.hint"
-  }
-}
-
-internal fun shouldShowExistingTaskSelectionHint(
-  targetMode: PromptTargetMode,
-  selectedExistingTaskId: String?,
-  selectedProvider: AgentSessionProvider?,
-): Boolean {
-  return targetMode == PromptTargetMode.EXISTING_TASK &&
-         selectedExistingTaskId.isNullOrBlank() &&
-         selectedProvider != AgentSessionProvider.CODEX
-}
-
-internal fun installPromptEnterHandlers(
-  promptArea: JBTextArea,
-  canSubmit: () -> Boolean,
-  targetMode: () -> PromptTargetMode,
-  onSubmit: () -> Unit,
-  onExistingTaskSubmitDisabled: () -> Unit,
-) {
-  val popupSubmitActionKey = "agent.prompt.submit"
-  val popupNewLineActionKey = "agent.prompt.insert.break"
-
-  promptArea.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), popupSubmitActionKey)
-  promptArea.actionMap.put(popupSubmitActionKey, object : AbstractAction() {
-    override fun actionPerformed(e: ActionEvent?) {
-      if (canSubmit()) {
-        onSubmit()
-      }
-      else if (targetMode() == PromptTargetMode.EXISTING_TASK) {
-        onExistingTaskSubmitDisabled()
-      }
-    }
-  })
-
-  promptArea.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.SHIFT_DOWN_MASK), popupNewLineActionKey)
-  promptArea.actionMap.put(popupNewLineActionKey, promptArea.actionMap.get(DefaultEditorKit.insertBreakAction))
-}

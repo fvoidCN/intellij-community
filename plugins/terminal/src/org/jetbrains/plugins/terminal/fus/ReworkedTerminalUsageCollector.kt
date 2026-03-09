@@ -25,7 +25,7 @@ private const val GROUP_ID = "terminal"
 object ReworkedTerminalUsageCollector : CounterUsagesCollector() {
   override fun getGroup(): EventLogGroup = GROUP
 
-  private val GROUP = EventLogGroup(GROUP_ID, 11)
+  private val GROUP = EventLogGroup(GROUP_ID, 12)
 
   private val OS_VERSION_FIELD = EventFields.StringValidatedByRegexpReference("os-version", "version")
   private val SHELL_STR_FIELD = EventFields.String("shell", KNOWN_SHELLS.toList())
@@ -145,15 +145,15 @@ object ReworkedTerminalUsageCollector : CounterUsagesCollector() {
   @JvmStatic
   fun logCommandStarted(project: Project, userCommandLine: String) {
     val commandData = TerminalCommandUsageStatistics.getLoggableCommandData(userCommandLine)
-    commandStartedEvent.log(project, commandData?.command, commandData?.subCommand)
+    commandStartedEvent.log(project, commandData.command, commandData.subCommand)
   }
 
   fun logCommandFinished(project: Project, userCommandLine: String, exitCode: Int, executionTime: Duration) {
     val commandData = TerminalCommandUsageStatistics.getLoggableCommandData(userCommandLine)
     commandFinishedEvent.log(
       project,
-      TerminalCommandUsageStatistics.commandExecutableField with commandData?.command,
-      TerminalCommandUsageStatistics.subCommandField with commandData?.subCommand,
+      TerminalCommandUsageStatistics.commandExecutableField with commandData.command,
+      TerminalCommandUsageStatistics.subCommandField with commandData.subCommand,
       EXIT_CODE_FIELD with exitCode,
       EXECUTION_TIME_FIELD with executionTime.inWholeMilliseconds
     )

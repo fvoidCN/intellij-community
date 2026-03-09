@@ -84,6 +84,9 @@ object CommunityLibraryLicenses {
       .apache("https://github.com/apache/commons-compress/blob/master/LICENSE.txt")
       .suppliedByOrganizations(Suppliers.APACHE),
 
+    LibraryLicense("Apache Commons CSV", libraryName = "commons-csv", url = "https://commons.apache.org/proper/commons-csv/")
+      .apache("https://github.com/apache/commons-csv/blob/master/LICENSE.txt"),
+
     LibraryLicense("Apache Commons Discovery", libraryName = "commons-discovery", url = "https://commons.apache.org/dormant/commons-discovery/")
       .apache("https://commons.apache.org/dormant/commons-discovery/license.html")
       .copyrightText("Copyright © 2002-2011 The Apache Software Foundation. All Rights Reserved.")
@@ -1193,12 +1196,6 @@ object CommunityLibraryLicenses {
     LibraryLicense(libraryName = "sa-jdwp", url = "https://github.com/JetBrains/jdk-sa-jdwp")
       .gpl2ce("https://github.com/JetBrains/jdk-sa-jdwp/raw/master/LICENSE.txt"),
 
-    LibraryLicense(libraryName = "Saxon-6.5.5", version = "6.5.5", url = "https://saxon.sourceforge.net/")
-      .license("MPL 1.1", "https://www.mozilla.org/en-US/MPL/1.1/"),
-
-    LibraryLicense(libraryName = "Saxon-9HE", version = "9.9", url = "https://saxon.sourceforge.net/")
-      .mpl2("https://www.mozilla.org/en-US/MPL/2.0/"),
-
     LibraryLicense(name = "Schema Kenerator", libraryName = "io.github.smiley4.schema.kenerator.core", url = "https://github.com/SMILEY4/schema-kenerator",
                    additionalLibraryNames = listOf(
                      "io.github.smiley4.schema.kenerator.jsonschema",
@@ -1360,15 +1357,6 @@ object CommunityLibraryLicenses {
       .mit("https://github.com/jenkinsci/winp/blob/master/LICENSE.txt")
       .suppliedByPersons("Kohsuke Kawaguchi"),
 
-    // for workmanager-inspector-proto module library in intellij.android.app-inspection.inspectors.workmanager.model
-    LibraryLicense("Xalan", libraryName = "Xalan-2.7.3", url = "https://xalan.apache.org/xalan-j/")
-      .apache("https://xalan.apache.org/xalan-j/#license")
-      .suppliedByOrganizations(Suppliers.APACHE),
-
-    LibraryLicense("Xalan serializer", libraryName = "Serializer-2.7.3", url = "https://xalan.apache.org/xalan-j/")
-      .apache("https://xalan.apache.org/xalan-j/#license")
-      .suppliedByOrganizations(Suppliers.APACHE),
-
     LibraryLicense(libraryName = "Xerces", url = "https://xerces.apache.org/xerces2-j/")
       .apache("https://svn.apache.org/repos/asf/xerces/java/trunk/LICENSE")
       .suppliedByOrganizations(Suppliers.APACHE),
@@ -1460,8 +1448,7 @@ object CommunityLibraryLicenses {
     jetbrainsLibrary("find-file-model"),
     jetbrainsLibrary("find-file-model-experimental"),
     jetbrainsLibrary("git-learning-project"),
-    jetbrainsLibrary("intellij.remoterobot.remote.fixtures"),
-    jetbrainsLibrary("intellij.remoterobot.robot.server.core"),
+    jetbrainsLibrary("jetbrains.app.daemon.client"),
     jetbrainsLibrary("jetbrains.compose.components.ui.tooling.preview.desktop"),
     jetbrainsLibrary("jetbrains.compose.hot.reload.devtools.api"),
     jetbrainsLibrary("jetbrains.compose.hot.reload.gradle.idea"),
@@ -1486,15 +1473,11 @@ object CommunityLibraryLicenses {
     jetbrainsLibrary("kotlinc.analysis-api"),
     jetbrainsLibrary("kotlinc.analysis-api-fe10"),
     jetbrainsLibrary("kotlinc.analysis-api-impl-base"),
-    jetbrainsLibrary("kotlinc.analysis-api-impl-base-tests"),
     jetbrainsLibrary("kotlinc.analysis-api-k2"),
-    jetbrainsLibrary("kotlinc.analysis-api-k2-tests"),
     jetbrainsLibrary("kotlinc.analysis-api-platform-interface"),
     jetbrainsLibrary("kotlinc.assignment-compiler-plugin"),
     jetbrainsLibrary("kotlinc.compose-compiler-plugin"),
-    jetbrainsLibrary("kotlinc.incremental-compilation-impl-tests"),
     jetbrainsLibrary("kotlinc.js-plain-objects-compiler-plugin"),
-    jetbrainsLibrary("kotlinc.kotlin-build-common-tests"),
     jetbrainsLibrary("kotlinc.kotlin-build-tools-api"),
     jetbrainsLibrary("kotlinc.kotlin-build-tools-cri-impl"),
     jetbrainsLibrary("kotlinc.kotlin-build-tools-impl"),
@@ -1503,7 +1486,6 @@ object CommunityLibraryLicenses {
     jetbrainsLibrary("kotlinc.kotlin-compiler-fe10"),
     jetbrainsLibrary("kotlinc.kotlin-compiler-fir"),
     jetbrainsLibrary("kotlinc.kotlin-compiler-ir"),
-    jetbrainsLibrary("kotlinc.kotlin-compiler-tests"),
     jetbrainsLibrary("kotlinc.kotlin-dataframe-compiler-plugin"),
     jetbrainsLibrary("kotlinc.kotlin-dist"),
     jetbrainsLibrary("kotlinc.kotlin-gradle-statistics"),
@@ -1536,7 +1518,6 @@ object CommunityLibraryLicenses {
     jetbrainsLibrary("tips-idea-ce"),
     jetbrainsLibrary("tips-pycharm-community"),
     jetbrainsLibrary("workspace-model-codegen"),
-    jetbrainsLibrary("RMI Stubs").copy(name = "XSLT Debugger RMI Stubs"),
   )
 }
 

@@ -8,8 +8,6 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
-import com.intellij.psi.SmartPointerManager
-import com.intellij.psi.SmartPsiFileRange
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.spellchecker.engine.DictionaryModificationTracker
 import com.intellij.util.ConcurrencyUtil
@@ -29,7 +27,7 @@ class ProofreadingService {
      * it extracts text contents from the file and performs checking.
      *
      * @param file the PSI file to check
-     * @param range the text ranges to check; if empty, an empty list of problems is returned
+     * @param range the text ranges to check. If empty, then returns all found problems
      * @return problems found in the specified range
      */
     @JvmStatic
@@ -38,9 +36,13 @@ class ProofreadingService {
         .filter { text -> range.isEmpty || text.rangesInFile.any { it.intersects(range) } }
       if (GrazieInspection.skipCheckingTooLargeTexts(texts)) return emptyList()
       val problems = texts.flatMap { text ->
-        CheckerRunner(text).run().filter { range.isEmpty || it.intersects(range) }
+        CheckerRunner(text).run()
+          .filter { range.isEmpty || it.intersects(range) }
+          .filter { it.hasSuggestions() }
       }
       return problems + TreeRuleChecker.checkTextLevelProblems(file)
+        .filter { problem -> range.isEmpty || problem.intersects(range) || problem.text.rangesInFile.any { it.intersects(range) } }
+        .filter { it.hasSuggestions() }
     }
 
     /**
@@ -63,9 +65,8 @@ class ProofreadingService {
       val problemsWithSuggestions = problems.filter { it.hasSuggestions() }
       if (problemsWithSuggestions.isEmpty()) return
       val file = this.containingFile
-      val smartPointerManager = SmartPointerManager.getInstance(file.project)
       getRangesCache(file, rangesKey, getConfigStamp(file))
-        .ranges.addAll(computeRanges(file, problemsWithSuggestions, smartPointerManager))
+        .ranges.addAll(computeRanges(problemsWithSuggestions))
     }
 
     @JvmStatic
@@ -73,14 +74,12 @@ class ProofreadingService {
     internal fun PsiFile.registerProblems(problems: List<TextProblem>) {
       val problemsWithSuggestions = problems.filter { it.hasSuggestions() }
       if (problemsWithSuggestions.isEmpty()) return
-      val smartPointerManager = SmartPointerManager.getInstance(project)
       getRangesCache(this, textLevelRangesKey, getProjectConfigStamp(this))
-        .ranges.addAll(computeRanges(this, problemsWithSuggestions, smartPointerManager))
+        .ranges.addAll(computeRanges(problemsWithSuggestions))
     }
 
-    private fun computeRanges(file: PsiFile, problems: List<TextProblem>, manager: SmartPointerManager): List<SmartPsiFileRange> =
+    private fun computeRanges(problems: List<TextProblem>): List<TextRange> =
       problems.flatMap { getProblemTextRanges(it) }
-        .map { manager.createSmartPsiFileRangePointer(file, it) }
 
     private fun getRangesCache(file: PsiFile, key: Key<Ranges>, stamp: Long): Ranges {
       val cache = file.getUserData(key)
@@ -92,9 +91,11 @@ class ProofreadingService {
     }
 
     // if a typo's suggestion is to be calculated locally, let's hope there will be suggestion
-    private fun TextProblem.hasSuggestions(): Boolean = this is TypoProblem && !this.isCloud || this.suggestions.isNotEmpty()
+    private fun TextProblem.hasSuggestions(): Boolean =
+      this is TypoProblem && !this.isCloud || this.suggestions.isNotEmpty() || this.customFixes.isNotEmpty()
 
-    private fun getProjectConfigStamp(file: PsiFile) = PsiModificationTracker.getInstance(file.project).modificationCount
+    private fun getProjectConfigStamp(file: PsiFile): Long =
+      PsiModificationTracker.getInstance(file.project).modificationCount + file.modificationStamp
     private fun getConfigStamp(file: PsiFile): Long =
       service<GrazieConfig>().modificationCount + DictionaryModificationTracker.getInstance(file.project).modificationCount + file.modificationStamp
 
@@ -102,13 +103,9 @@ class ProofreadingService {
     private fun TextProblem.intersects(range: TextRange) = getProblemTextRanges(this)
       .any { problemRange -> problemRange.intersects(range) }
 
-    private data class Ranges(val configStamp: Long, val ranges: MutableSet<SmartPsiFileRange>) {
-      fun covers(ranges: List<TextRange>): Boolean {
-        if (this.ranges.isEmpty()) return false
-        return this.ranges.mapNotNull { it.range }
-          .map { TextRange(it.startOffset, it.endOffset) }
-          .any { range -> ranges.any { range.intersects(it) } }
-      }
+    private data class Ranges(val configStamp: Long, val ranges: MutableSet<TextRange>) {
+      fun covers(ranges: List<TextRange>): Boolean =
+        this.ranges.any { range -> ranges.any { range.intersects(it) } }
     }
   }
 }

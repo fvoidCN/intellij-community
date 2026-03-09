@@ -28,8 +28,8 @@ import com.jetbrains.python.packaging.PyPackageName
 import com.jetbrains.python.packaging.PyPackageService
 import com.jetbrains.python.packaging.PyPackageVersionNormalizer
 import com.jetbrains.python.packaging.cache.PythonSimpleRepositoryCache
-import com.jetbrains.python.packaging.common.PythonPackage
 import com.jetbrains.python.packaging.common.PythonOutdatedPackage
+import com.jetbrains.python.packaging.common.PythonPackage
 import com.jetbrains.python.packaging.common.PythonPackageDetails
 import com.jetbrains.python.packaging.common.PythonPackageManagementListener
 import com.jetbrains.python.packaging.common.PythonRepositoryPackageSpecification
@@ -418,9 +418,18 @@ class PyPackagingToolWindowService(val project: Project, val serviceScope: Corou
     }
   }
 
-  private class PackageIndex(manager: PythonPackageManager) {
-    val installedByName: Map<String, PythonPackage> = manager.listInstalledPackagesSnapshot().associateBy { it.name }
-    val outdated: Map<String, PythonOutdatedPackage> = manager.listOutdatedPackagesSnapshot()
+  private class PackageIndex(
+    val installedByName: Map<String, PythonPackage>,
+    val outdated: Map<String, PythonOutdatedPackage>,
+  ) {
+    companion object {
+      suspend operator fun invoke(manager: PythonPackageManager): PackageIndex {
+        return PackageIndex(
+          installedByName = manager.listInstalledPackages().associateBy { it.name },
+          outdated = manager.listOutdatedPackages(),
+        )
+      }
+    }
   }
 
   private suspend fun buildPackagesFromTree(
@@ -587,10 +596,11 @@ class PyPackagingToolWindowService(val project: Project, val serviceScope: Corou
       showNoInterpreterMessage()
       return
     }
-    
-    serviceScope.launch(Dispatchers.Default) {
-      context.managerUI.reloadPackagesBackground()
-      refreshInstalledPackages()
+    serviceScope.launch(Dispatchers.Default + TraceContext(message("trace.context.packaging.tool.window"), serviceScope)) {
+      withContext(TraceContext(message("trace.context.packaging.tool.window.sdk.reload", context.sdk.name))) {
+        context.managerUI.reloadPackagesBackground()
+        refreshInstalledPackages()
+      }
     }
   }
 
@@ -598,7 +608,7 @@ class PyPackagingToolWindowService(val project: Project, val serviceScope: Corou
     val updated = SingleConfigurableEditor(project, PyRepositoriesList(project)).showAndGet()
     if (updated) {
       PythonPackagesToolwindowStatisticsCollector.repositoriesChangedEvent.log(project)
-      serviceScope.launch(Dispatchers.IO) {
+      serviceScope.launch(Dispatchers.IO + TraceContext(message("trace.context.packaging.tool.window"), serviceScope)) {
         val packageService = PyPackageService.getInstance()
         val repositoryService = service<PyPackageRepositories>()
         val allRepos = repositoryService.repositories.map { it.repositoryUrl }

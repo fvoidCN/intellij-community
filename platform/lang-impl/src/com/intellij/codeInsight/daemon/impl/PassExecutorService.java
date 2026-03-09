@@ -484,7 +484,7 @@ public final class PassExecutorService implements Disposable {
         });
 
         if (!success) {
-          myUpdateProgress.cancel();
+          myUpdateProgress.cancel("tryReadAction() returned false");
         }
       }, myUpdateProgress);
 
@@ -527,7 +527,7 @@ public final class PassExecutorService implements Disposable {
     try {
       ApplicationManager.getApplication().invokeLater(() -> {
         if (isDisposed() || !fileEditor.isValid()) {
-          updateProgress.cancel();
+          updateProgress.cancel("isDisposed()="+isDisposed()+"; fileEditor.isValid()="+fileEditor.isValid());
         }
         if (updateProgress.isCanceled()) {
           log(updateProgress, pass, " is canceled during apply, sorry");
@@ -561,7 +561,7 @@ public final class PassExecutorService implements Disposable {
             VirtualFile virtualFile = fileEditor.getFile();
             Document document = FileDocumentManager.getInstance().getDocument(virtualFile);
             RangeHighlighter[] highlighters = document == null ? RangeHighlighter.EMPTY_ARRAY : DocumentMarkupModel.forDocument(document, myProject, true).getAllHighlighters();
-            List<RangeHighlighter> sorted = ContainerUtil.sorted(Arrays.asList(highlighters), Segment.BY_START_OFFSET_THEN_END_OFFSET);
+            List<RangeHighlighter> sorted = ContainerUtil.filter(ContainerUtil.sorted(Arrays.asList(highlighters), Segment.BY_START_OFFSET_THEN_END_OFFSET), h->h.isValid());
             log(updateProgress, pass, "result markup=" + StringUtil.join(sorted, h -> h.toString(), "\n   "));
           }
           log(updateProgress, pass, "Stopping. ");

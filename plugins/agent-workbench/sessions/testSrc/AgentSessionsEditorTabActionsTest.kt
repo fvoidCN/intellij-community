@@ -5,7 +5,7 @@ import com.intellij.agent.workbench.chat.AgentChatEditorTabActionContext
 import com.intellij.agent.workbench.chat.AgentChatPendingCodexTabRebindReport
 import com.intellij.agent.workbench.chat.AgentChatPendingCodexTabRebindRequest
 import com.intellij.agent.workbench.chat.AgentChatPendingCodexTabRebindStatus
-import com.intellij.agent.workbench.chat.AgentChatPendingTabRebindTarget
+import com.intellij.agent.workbench.chat.AgentChatTabRebindTarget
 import com.intellij.agent.workbench.common.normalizeAgentWorkbenchPath
 import com.intellij.agent.workbench.sessions.actions.AgentSessionsBindPendingCodexThreadFromEditorTabAction
 import com.intellij.agent.workbench.sessions.actions.AgentSessionsCopyThreadIdFromEditorTabAction
@@ -204,11 +204,12 @@ class AgentSessionsEditorTabActionsTest {
   }
 
   @Test
-  fun archiveThreadActionInvokesArchiveCallback() {
+  fun archiveThreadActionUsesSubAgentTargetWhenContextCarriesSubAgentId() {
     val context = editorContext(
       threadIdentity = "codex:thread-1",
       sessionId = "thread-1",
       threadId = "sub-agent-1",
+      subAgentId = "sub-agent-1",
     )
     var archivedTargets: List<ArchiveThreadTarget>? = null
 
@@ -221,9 +222,14 @@ class AgentSessionsEditorTabActionsTest {
     action.actionPerformed(TestActionEvent.createTestEvent(action))
 
     val archivedTarget = checkNotNull(archivedTargets).single()
-    assertThat(archivedTarget.path).isEqualTo(context.path)
-    assertThat(archivedTarget.threadId).isEqualTo(context.threadId)
-    assertThat(archivedTarget.provider).isEqualTo(context.provider)
+    assertThat(archivedTarget).isEqualTo(
+      ArchiveThreadTarget.SubAgent(
+        path = context.path,
+        provider = checkNotNull(context.provider),
+        parentThreadId = context.sessionId,
+        subAgentId = checkNotNull(context.subAgentId),
+      )
+    )
   }
 
   @Test
@@ -232,6 +238,7 @@ class AgentSessionsEditorTabActionsTest {
       threadIdentity = "codex:thread-1",
       sessionId = "thread-1",
       threadId = "sub-agent-1",
+      subAgentId = "sub-agent-1",
     )
     var ensuredPath: String? = null
     var ensuredProvider: AgentSessionProvider? = null
@@ -303,7 +310,7 @@ class AgentSessionsEditorTabActionsTest {
       sessionId = "new-1",
       isPendingThread = true,
     )
-    val target = AgentChatPendingTabRebindTarget(
+    val target = AgentChatTabRebindTarget(
       threadIdentity = "codex:thread-42",
       threadId = "thread-42",
       shellCommand = listOf("codex", "resume", "thread-42"),
@@ -368,7 +375,7 @@ class AgentSessionsEditorTabActionsTest {
       sessionId = "new-1",
       isPendingThread = true,
     )
-    val target = AgentChatPendingTabRebindTarget(
+    val target = AgentChatTabRebindTarget(
       threadIdentity = "codex:thread-42",
       threadId = "thread-42",
       shellCommand = listOf("codex", "resume", "thread-42"),
@@ -378,7 +385,7 @@ class AgentSessionsEditorTabActionsTest {
     var reboundPath: String? = null
     var reboundPendingTabKey: String? = null
     var reboundPendingIdentity: String? = null
-    var reboundTarget: AgentChatPendingTabRebindTarget? = null
+    var reboundTarget: AgentChatTabRebindTarget? = null
 
     val action = AgentSessionsBindPendingCodexThreadFromEditorTabAction(
       resolveContext = { context },
@@ -484,6 +491,7 @@ private fun editorContext(
   provider: AgentSessionProvider? = AgentSessionProvider.CODEX,
   sessionId: String = "thread-1",
   isPendingThread: Boolean = false,
+  subAgentId: String? = null,
 ): AgentChatEditorTabActionContext {
   return AgentChatEditorTabActionContext(
     project = ProjectManager.getInstance().defaultProject,
@@ -494,6 +502,7 @@ private fun editorContext(
     provider = provider,
     sessionId = sessionId,
     isPendingThread = isPendingThread,
+    subAgentId = subAgentId,
   )
 }
 

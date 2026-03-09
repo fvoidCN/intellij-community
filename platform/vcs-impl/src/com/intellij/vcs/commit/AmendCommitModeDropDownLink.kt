@@ -2,13 +2,11 @@
 package com.intellij.vcs.commit
 
 import com.intellij.icons.AllIcons
-import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.UI
 import com.intellij.openapi.ui.popup.JBPopup
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vcs.VcsBundle
-import com.intellij.ui.JBColor
 import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.components.DropDownLink
 import com.intellij.util.ui.launchOnShow
@@ -18,24 +16,14 @@ import org.jetbrains.annotations.Nls
 import javax.swing.JList
 
 internal class AmendCommitModeDropDownLink(val amendHandler: AmendCommitHandler) :
-  DropDownLink<CommitToAmend>(CommitToAmend.Last, { link -> createPopup(link, amendHandler) }), AmendCommitModeListener, Disposable {
-
-  init {
-    amendHandler.addAmendCommitModeListener(this, this)
-    foreground = JBColor.foreground()
-    isRolloverEnabled = false
-  }
-
+  DropDownLink<CommitToAmend>(CommitToAmend.Last, { link -> createPopup(link, amendHandler) }) {
   override fun itemToString(item: CommitToAmend): String = Companion.itemToString(item)
 
-  override fun amendCommitModeToggled() {
+  fun update() {
     val item = if (amendHandler.commitToAmend == CommitToAmend.None) CommitToAmend.Last else amendHandler.commitToAmend
 
     selectedItem = item
     text = itemToLinkText(item)
-  }
-
-  override fun dispose() {
   }
 
   companion object {
@@ -71,8 +59,11 @@ internal class AmendCommitModeDropDownLink(val amendHandler: AmendCommitHandler)
             selected: Boolean,
             hasFocus: Boolean,
           ) {
-            text = itemToPopupText(value)
+            val fullText = itemToString(value)
+            val popupText = itemToPopupText(value)
+            text = popupText
             icon = if (value == link.selectedItem) AllIcons.Actions.Checked else AllIcons.Empty
+            toolTipText = if (popupText == fullText) null else fullText
           }
         })
         .setSelectedValue(link.selectedItem, true)

@@ -7,7 +7,12 @@ package com.intellij.agent.workbench.chat
 
 import com.intellij.agent.workbench.common.AgentThreadActivity
 import com.intellij.agent.workbench.common.normalizeAgentWorkbenchPath
+import com.intellij.agent.workbench.common.parseAgentThreadIdentity
+import com.intellij.agent.workbench.sessions.core.AgentSessionProvider
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessageDispatchPlan
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessageTimeoutPolicy
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.UI
 import com.intellij.openapi.components.service
 import com.intellij.openapi.components.serviceAsync
@@ -22,8 +27,10 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.vfs.VirtualFile
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.withContext
-import org.jetbrains.annotations.TestOnly
 import java.util.concurrent.atomic.AtomicReference
 
 private class AgentChatEditorServiceLog
@@ -32,15 +39,22 @@ private val LOG = logger<AgentChatEditorServiceLog>()
 private const val CODEX_PROVIDER_ID = "codex"
 private val fileEditorProviderOverrideForTests: AtomicReference<FileEditorProvider?> = AtomicReference(null)
 
-@TestOnly
-fun setAgentChatFileEditorProviderOverrideForTests(provider: FileEditorProvider?) {
-  fileEditorProviderOverrideForTests.set(provider)
+private object CodexScopedRefreshSignalBus {
+  private val signalFlow = MutableSharedFlow<Set<String>>(extraBufferCapacity = 64)
+
+  fun signal(projectPath: String): Boolean {
+    val normalizedPath = normalizeAgentWorkbenchPath(projectPath)
+    return normalizedPath.isNotBlank() && signalFlow.tryEmit(setOf(normalizedPath))
+  }
+
+  fun signals(): Flow<Set<String>> = signalFlow.asSharedFlow()
 }
 
-data class AgentChatPendingTabRebindTarget(
+data class AgentChatTabRebindTarget(
   @JvmField val threadIdentity: String,
   @JvmField val threadId: String,
   @JvmField val shellCommand: List<String>,
+  @JvmField val shellEnvVariables: Map<String, String> = emptyMap(),
   @JvmField val threadTitle: String,
   @JvmField val threadActivity: AgentThreadActivity,
   @JvmField val threadUpdatedAt: Long = 0L,
@@ -55,10 +69,24 @@ data class AgentChatPendingCodexTabSnapshot(
   @JvmField val pendingLaunchMode: String?,
 )
 
+data class AgentChatConcreteCodexTabSnapshot(
+  @JvmField val projectPath: String,
+  @JvmField val tabKey: String,
+  @JvmField val currentThreadIdentity: String,
+  @JvmField val newThreadRebindRequestedAtMs: Long,
+)
+
 data class AgentChatPendingCodexTabRebindRequest(
   @JvmField val pendingTabKey: String,
   @JvmField val pendingThreadIdentity: String,
-  @JvmField val target: AgentChatPendingTabRebindTarget,
+  @JvmField val target: AgentChatTabRebindTarget,
+)
+
+data class AgentChatConcreteCodexTabRebindRequest(
+  @JvmField val tabKey: String,
+  @JvmField val currentThreadIdentity: String,
+  @JvmField val newThreadRebindRequestedAtMs: Long,
+  @JvmField val target: AgentChatTabRebindTarget,
 )
 
 enum class AgentChatPendingCodexTabRebindStatus {
@@ -83,12 +111,34 @@ data class AgentChatPendingCodexTabRebindReport(
   @JvmField val outcomesByPath: Map<String, List<AgentChatPendingCodexTabRebindOutcome>>,
 )
 
+enum class AgentChatConcreteCodexTabRebindStatus {
+  REBOUND,
+  CONCRETE_TAB_NOT_OPEN,
+  INVALID_CONCRETE_TAB,
+  TARGET_ALREADY_OPEN,
+}
+
+data class AgentChatConcreteCodexTabRebindOutcome(
+  @JvmField val projectPath: String,
+  @JvmField val request: AgentChatConcreteCodexTabRebindRequest,
+  @JvmField val status: AgentChatConcreteCodexTabRebindStatus,
+  @JvmField val reboundFiles: Int,
+)
+
+data class AgentChatConcreteCodexTabRebindReport(
+  @JvmField val requestedBindings: Int,
+  @JvmField val reboundBindings: Int,
+  @JvmField val reboundFiles: Int,
+  @JvmField val updatedPresentations: Int,
+  @JvmField val outcomesByPath: Map<String, List<AgentChatConcreteCodexTabRebindOutcome>>,
+)
+
 suspend fun openChat(
   project: Project,
   projectPath: String,
   threadIdentity: String,
   shellCommand: List<String>,
-  startupShellCommandOverride: List<String>? = null,
+  shellEnvVariables: Map<String, String> = emptyMap(),
   threadId: String,
   threadTitle: String,
   subAgentId: String?,
@@ -96,22 +146,30 @@ suspend fun openChat(
   pendingCreatedAtMs: Long? = null,
   pendingFirstInputAtMs: Long? = null,
   pendingLaunchMode: String? = null,
-  initialComposedMessage: String? = null,
-  initialMessageToken: String? = null,
-  initialMessageSent: Boolean = false,
+  initialMessageDispatchPlan: AgentInitialMessageDispatchPlan = AgentInitialMessageDispatchPlan.EMPTY,
 ) {
   val manager = FileEditorManagerEx.getInstanceExAsync(project)
-  val existing = findExistingChat(manager.openFiles, threadIdentity, subAgentId)
-  val startupOverrideForNewTab = if (existing == null) startupShellCommandOverride else null
-  val snapshotInitialComposedMessage = if (startupOverrideForNewTab != null) null else initialComposedMessage
-  val snapshotInitialMessageToken = if (startupOverrideForNewTab != null) null else initialMessageToken
-  val snapshotInitialMessageSent = if (startupOverrideForNewTab != null) false else initialMessageSent
-  LOG.debug {
-    "openChat(project=${project.name}, path=$projectPath, identity=$threadIdentity, " +
-    "subAgentId=$subAgentId, existing=${existing != null}, title=$threadTitle)"
+
+  val tabKey = AgentChatTabKey.fromIdentity(
+    AgentChatTabIdentity(
+      projectHash = project.locationHash,
+      projectPath = projectPath,
+      threadIdentity = threadIdentity,
+      subAgentId = subAgentId,
+    )
+  )
+  val existing = findExistingChatByTabKey(manager.openFiles, tabKey.value)
+                 ?: findExistingChat(manager.openFiles, threadIdentity, subAgentId)
+  val startupOverrideForNewTab = if (existing == null) initialMessageDispatchPlan.startupLaunchSpecOverride else null
+  val snapshotInitialComposedMessage = if (startupOverrideForNewTab != null) null else initialMessageDispatchPlan.initialComposedMessage
+  val snapshotInitialMessageToken = if (startupOverrideForNewTab != null) null else initialMessageDispatchPlan.initialMessageToken
+  val snapshotInitialMessageSent = false
+  val snapshotInitialMessageTimeoutPolicy = if (startupOverrideForNewTab != null) {
+    AgentInitialMessageTimeoutPolicy.ALLOW_TIMEOUT_FALLBACK
   }
-  val tabsService = serviceAsync<AgentChatTabsService>()
-  val fileSystem = agentChatVirtualFileSystem()
+  else {
+    initialMessageDispatchPlan.initialMessageTimeoutPolicy
+  }
   val snapshot = AgentChatTabSnapshot.create(
     projectHash = project.locationHash,
     projectPath = projectPath,
@@ -120,17 +178,28 @@ suspend fun openChat(
     threadTitle = threadTitle,
     subAgentId = subAgentId,
     shellCommand = shellCommand,
+    shellEnvVariables = shellEnvVariables,
     threadActivity = threadActivity,
     pendingCreatedAtMs = pendingCreatedAtMs,
     pendingFirstInputAtMs = pendingFirstInputAtMs,
     pendingLaunchMode = pendingLaunchMode,
+    newThreadRebindRequestedAtMs = existing?.newThreadRebindRequestedAtMs,
     initialComposedMessage = snapshotInitialComposedMessage,
     initialMessageToken = snapshotInitialMessageToken,
     initialMessageSent = snapshotInitialMessageSent,
+    initialMessageTimeoutPolicy = snapshotInitialMessageTimeoutPolicy,
   )
+  LOG.debug {
+    "openChat(project=${project.name}, path=$projectPath, identity=$threadIdentity, " +
+    "subAgentId=$subAgentId, existing=${existing != null}, title=$threadTitle)"
+  }
+  val tabsService = serviceAsync<AgentChatTabsService>()
+  val fileSystem = agentChatVirtualFileSystemAsync()
+
   val file = existing ?: fileSystem.getOrCreateFile(snapshot)
   if (existing != null) {
-    existing.updateCommandAndThreadId(shellCommand = shellCommand, threadId = threadId)
+    existing.updateFromResolution(AgentChatTabResolution.Resolved(snapshot))
+    existing.updateCommandAndThreadId(shellCommand = shellCommand, shellEnvVariables = shellEnvVariables, threadId = threadId)
     val titleUpdated = existing.updateThreadTitle(threadTitle)
     val activityUpdated = existing.updateThreadActivity(threadActivity)
     val pendingUpdated = if (
@@ -148,14 +217,15 @@ suspend fun openChat(
       false
     }
     val initialMessageUpdated = if (
-      initialComposedMessage != null ||
-      initialMessageToken != null ||
-      initialMessageSent
+      initialMessageDispatchPlan.initialComposedMessage != null ||
+      initialMessageDispatchPlan.initialMessageToken != null ||
+      initialMessageDispatchPlan.initialMessageTimeoutPolicy != AgentInitialMessageTimeoutPolicy.ALLOW_TIMEOUT_FALLBACK
     ) {
       existing.updateInitialMessageMetadata(
-        initialComposedMessage = initialComposedMessage,
-        initialMessageToken = initialMessageToken,
-        initialMessageSent = initialMessageSent,
+        initialComposedMessage = initialMessageDispatchPlan.initialComposedMessage,
+        initialMessageToken = initialMessageDispatchPlan.initialMessageToken,
+        initialMessageSent = false,
+        initialMessageTimeoutPolicy = initialMessageDispatchPlan.initialMessageTimeoutPolicy,
       )
     }
     else {
@@ -176,7 +246,7 @@ suspend fun openChat(
   }
   else {
     if (startupOverrideForNewTab != null) {
-      file.setStartupShellCommandOverride(startupOverrideForNewTab)
+      file.setStartupLaunchSpecOverride(startupOverrideForNewTab)
     }
     tabsService.upsert(file.toSnapshot())
     LOG.debug {
@@ -197,6 +267,10 @@ suspend fun openChat(
   LOG.debug {
     "openChat openFile completed(identity=$threadIdentity, subAgentId=$subAgentId, fileName=${file.name}, activity=$threadActivity)"
   }
+
+  if (isPendingCodexThreadIdentity(threadIdentity)) {
+    notifyCodexTerminalOutputForRefresh(projectPath)
+  }
 }
 
 suspend fun collectOpenAgentChatProjectPaths(): Set<String> {
@@ -205,6 +279,14 @@ suspend fun collectOpenAgentChatProjectPaths(): Set<String> {
 
 suspend fun collectOpenPendingAgentChatProjectPaths(): Set<String> {
   return collectOpenAgentChatProjectPaths(includePendingOnly = true)
+}
+
+fun notifyCodexTerminalOutputForRefresh(projectPath: String) {
+  CodexScopedRefreshSignalBus.signal(projectPath)
+}
+
+fun codexScopedRefreshSignals(): Flow<Set<String>> {
+  return CodexScopedRefreshSignalBus.signals()
 }
 
 suspend fun collectOpenPendingCodexTabsByPath(): Map<String, List<AgentChatPendingCodexTabSnapshot>> = withContext(Dispatchers.UI) {
@@ -217,7 +299,7 @@ suspend fun collectOpenPendingCodexTabsByPath(): Map<String, List<AgentChatPendi
         continue
       }
       val normalizedPath = normalizeAgentWorkbenchPath(chatFile.projectPath)
-      result.getOrPut(normalizedPath) { ArrayList() }.add(
+      result.computeIfAbsent(normalizedPath) { ArrayList() }.add(
         AgentChatPendingCodexTabSnapshot(
           projectPath = normalizedPath,
           pendingTabKey = chatFile.tabKey,
@@ -232,6 +314,44 @@ suspend fun collectOpenPendingCodexTabsByPath(): Map<String, List<AgentChatPendi
   result
 }
 
+suspend fun collectOpenConcreteCodexTabsAwaitingNewThreadRebindByPath(): Map<String, List<AgentChatConcreteCodexTabSnapshot>> = withContext(Dispatchers.UI) {
+  val snapshotsByPathAndTabKey = LinkedHashMap<String, LinkedHashMap<String, AgentChatConcreteCodexTabSnapshot>>()
+  for (project in ProjectManager.getInstance().openProjects) {
+    val manager = project.serviceIfCreated<FileEditorManager>() ?: continue
+    for (openFile in manager.openFiles) {
+      val chatFile = openFile as? AgentChatVirtualFile ?: continue
+      if (
+        chatFile.provider != AgentSessionProvider.CODEX ||
+        chatFile.isPendingThread ||
+        chatFile.subAgentId != null
+      ) {
+        continue
+      }
+      val requestedAtMs = chatFile.newThreadRebindRequestedAtMs ?: continue
+      val normalizedPath = normalizeAgentWorkbenchPath(chatFile.projectPath)
+      snapshotsByPathAndTabKey
+        .computeIfAbsent(normalizedPath) { LinkedHashMap() }
+        .putIfAbsent(
+          chatFile.tabKey,
+          AgentChatConcreteCodexTabSnapshot(
+            projectPath = normalizedPath,
+            tabKey = chatFile.tabKey,
+            currentThreadIdentity = chatFile.threadIdentity,
+            newThreadRebindRequestedAtMs = requestedAtMs,
+          )
+        )
+    }
+  }
+  val result = LinkedHashMap<String, List<AgentChatConcreteCodexTabSnapshot>>(snapshotsByPathAndTabKey.size)
+  for ((normalizedPath, snapshotsByTabKey) in snapshotsByPathAndTabKey) {
+    if (snapshotsByTabKey.isEmpty()) {
+      continue
+    }
+    result[normalizedPath] = ArrayList(snapshotsByTabKey.values)
+  }
+  result
+}
+
 suspend fun collectOpenConcreteAgentChatThreadIdentitiesByPath(): Map<String, Set<String>> = withContext(Dispatchers.UI) {
   val result = LinkedHashMap<String, LinkedHashSet<String>>()
   for (project in ProjectManager.getInstance().openProjects) {
@@ -242,7 +362,7 @@ suspend fun collectOpenConcreteAgentChatThreadIdentitiesByPath(): Map<String, Se
         continue
       }
       val normalizedPath = normalizeAgentWorkbenchPath(chatFile.projectPath)
-      result.getOrPut(normalizedPath) { LinkedHashSet() }.add(chatFile.threadIdentity)
+      result.computeIfAbsent(normalizedPath) { LinkedHashSet() }.add(chatFile.threadIdentity)
     }
   }
   result
@@ -293,12 +413,12 @@ fun rebindOpenPendingCodexTabs(
       managerByFile.computeIfAbsent(chatFile) { LinkedHashSet() }.add(manager)
       if (isPendingCodexThreadIdentity(chatFile.threadIdentity)) {
         pendingFilesByPathAndTabKey
-          .getOrPut(normalizedPath) { LinkedHashMap() }
+          .computeIfAbsent(normalizedPath) { LinkedHashMap() }
           .putIfAbsent(chatFile.tabKey, chatFile)
       }
       else {
         openConcreteIdentitiesByPathAndManager
-          .getOrPut(normalizedPath) { LinkedHashMap() }
+          .computeIfAbsent(normalizedPath) { LinkedHashMap() }
           .computeIfAbsent(manager) { LinkedHashSet() }
           .add(chatFile.threadIdentity)
       }
@@ -309,7 +429,7 @@ fun rebindOpenPendingCodexTabs(
   val changedFiles = LinkedHashSet<AgentChatVirtualFile>()
   val outcomesByPath = LinkedHashMap<String, MutableList<AgentChatPendingCodexTabRebindOutcome>>()
   for ((normalizedPath, requests) in normalizedRequestsByPath) {
-    val outcomes = outcomesByPath.getOrPut(normalizedPath) { ArrayList(requests.size) }
+    val outcomes = outcomesByPath.computeIfAbsent(normalizedPath) { ArrayList(requests.size) }
     for (request in requests) {
       val pendingFile = pendingFilesByPathAndTabKey[normalizedPath]?.get(request.pendingTabKey)
       if (pendingFile == null) {
@@ -370,6 +490,7 @@ fun rebindOpenPendingCodexTabs(
       val changed = pendingFile.rebindPendingThread(
         threadIdentity = request.target.threadIdentity,
         shellCommand = request.target.shellCommand,
+        shellEnvVariables = request.target.shellEnvVariables,
         threadId = request.target.threadId,
         threadTitle = request.target.threadTitle,
         threadActivity = request.target.threadActivity,
@@ -391,7 +512,7 @@ fun rebindOpenPendingCodexTabs(
       changedFiles.add(pendingFile)
       for (manager in managers) {
         openConcreteIdentitiesByPathAndManager
-          .getOrPut(normalizedPath) { LinkedHashMap() }
+          .computeIfAbsent(normalizedPath) { LinkedHashMap() }
           .computeIfAbsent(manager) { LinkedHashSet() }
           .add(request.target.threadIdentity)
       }
@@ -430,6 +551,240 @@ fun rebindOpenPendingCodexTabs(
   return report
 }
 
+fun rebindOpenConcreteCodexTabs(
+  requestsByProjectPath: Map<String, List<AgentChatConcreteCodexTabRebindRequest>>,
+): AgentChatConcreteCodexTabRebindReport {
+  if (requestsByProjectPath.isEmpty()) {
+    return emptyConcreteCodexTabRebindReport()
+  }
+
+  val normalizedRequestsByPath = LinkedHashMap<String, List<AgentChatConcreteCodexTabRebindRequest>>()
+  for ((projectPath, requests) in requestsByProjectPath) {
+    if (requests.isEmpty()) {
+      continue
+    }
+    normalizedRequestsByPath[normalizeAgentWorkbenchPath(projectPath)] = requests
+  }
+  if (normalizedRequestsByPath.isEmpty()) {
+    return emptyConcreteCodexTabRebindReport()
+  }
+
+  val tabsService = service<AgentChatTabsService>()
+  val managerByFile = LinkedHashMap<AgentChatVirtualFile, LinkedHashSet<FileEditorManagerEx>>()
+  val openConcreteIdentitiesByPathAndManager = LinkedHashMap<String, LinkedHashMap<FileEditorManagerEx, LinkedHashSet<String>>>()
+  val concreteFilesByPathAndTabKey = LinkedHashMap<String, LinkedHashMap<String, AgentChatVirtualFile>>()
+  for (project in ProjectManager.getInstance().openProjects) {
+    val manager = project.serviceIfCreated<FileEditorManager>() as? FileEditorManagerEx ?: continue
+    for (openFile in manager.openFiles) {
+      val chatFile = openFile as? AgentChatVirtualFile ?: continue
+      val normalizedPath = normalizeAgentWorkbenchPath(chatFile.projectPath)
+      managerByFile.computeIfAbsent(chatFile) { LinkedHashSet() }.add(manager)
+      if (!isPendingThreadIdentity(chatFile.threadIdentity)) {
+        openConcreteIdentitiesByPathAndManager
+          .computeIfAbsent(normalizedPath) { LinkedHashMap() }
+          .computeIfAbsent(manager) { LinkedHashSet() }
+          .add(chatFile.threadIdentity)
+      }
+      if (
+        chatFile.provider == AgentSessionProvider.CODEX &&
+        !chatFile.isPendingThread &&
+        chatFile.subAgentId == null
+      ) {
+        concreteFilesByPathAndTabKey
+          .computeIfAbsent(normalizedPath) { LinkedHashMap() }
+          .putIfAbsent(chatFile.tabKey, chatFile)
+      }
+    }
+  }
+
+  var reboundBindings = 0
+  val changedFiles = LinkedHashSet<AgentChatVirtualFile>()
+  val outcomesByPath = LinkedHashMap<String, MutableList<AgentChatConcreteCodexTabRebindOutcome>>()
+  for ((normalizedPath, requests) in normalizedRequestsByPath) {
+    val outcomes = outcomesByPath.computeIfAbsent(normalizedPath) { ArrayList(requests.size) }
+    for (request in requests) {
+      val concreteFile = concreteFilesByPathAndTabKey[normalizedPath]?.get(request.tabKey)
+      if (concreteFile == null) {
+        outcomes.add(
+          AgentChatConcreteCodexTabRebindOutcome(
+            projectPath = normalizedPath,
+            request = request,
+            status = AgentChatConcreteCodexTabRebindStatus.CONCRETE_TAB_NOT_OPEN,
+            reboundFiles = 0,
+          )
+        )
+        continue
+      }
+
+      val managers = managerByFile[concreteFile].orEmpty()
+      if (managers.isEmpty()) {
+        outcomes.add(
+          AgentChatConcreteCodexTabRebindOutcome(
+            projectPath = normalizedPath,
+            request = request,
+            status = AgentChatConcreteCodexTabRebindStatus.CONCRETE_TAB_NOT_OPEN,
+            reboundFiles = 0,
+          )
+        )
+        continue
+      }
+
+      if (
+        concreteFile.provider != AgentSessionProvider.CODEX ||
+        concreteFile.isPendingThread ||
+        concreteFile.subAgentId != null ||
+        concreteFile.threadIdentity != request.currentThreadIdentity ||
+        concreteFile.newThreadRebindRequestedAtMs != request.newThreadRebindRequestedAtMs
+      ) {
+        outcomes.add(
+          AgentChatConcreteCodexTabRebindOutcome(
+            projectPath = normalizedPath,
+            request = request,
+            status = AgentChatConcreteCodexTabRebindStatus.INVALID_CONCRETE_TAB,
+            reboundFiles = 0,
+          )
+        )
+        continue
+      }
+
+      val targetIdentityAlreadyOpen = managers.any { manager ->
+        request.target.threadIdentity in openConcreteIdentitiesByPathAndManager[normalizedPath]?.get(manager).orEmpty()
+      }
+      if (targetIdentityAlreadyOpen) {
+        outcomes.add(
+          AgentChatConcreteCodexTabRebindOutcome(
+            projectPath = normalizedPath,
+            request = request,
+            status = AgentChatConcreteCodexTabRebindStatus.TARGET_ALREADY_OPEN,
+            reboundFiles = 0,
+          )
+        )
+        continue
+      }
+
+      val previousIdentity = concreteFile.threadIdentity
+      val changed = concreteFile.rebindConcreteThread(
+        threadIdentity = request.target.threadIdentity,
+        shellCommand = request.target.shellCommand,
+        shellEnvVariables = request.target.shellEnvVariables,
+        threadId = request.target.threadId,
+        threadTitle = request.target.threadTitle,
+        threadActivity = request.target.threadActivity,
+      )
+      if (!changed) {
+        outcomes.add(
+          AgentChatConcreteCodexTabRebindOutcome(
+            projectPath = normalizedPath,
+            request = request,
+            status = AgentChatConcreteCodexTabRebindStatus.INVALID_CONCRETE_TAB,
+            reboundFiles = 0,
+          )
+        )
+        continue
+      }
+
+      reboundBindings++
+      tabsService.upsert(concreteFile.toSnapshot())
+      changedFiles.add(concreteFile)
+      for (manager in managers) {
+        openConcreteIdentitiesByPathAndManager[normalizedPath]?.get(manager)?.remove(previousIdentity)
+        openConcreteIdentitiesByPathAndManager
+          .computeIfAbsent(normalizedPath) { LinkedHashMap() }
+          .computeIfAbsent(manager) { LinkedHashSet() }
+          .add(request.target.threadIdentity)
+      }
+      outcomes.add(
+        AgentChatConcreteCodexTabRebindOutcome(
+          projectPath = normalizedPath,
+          request = request,
+          status = AgentChatConcreteCodexTabRebindStatus.REBOUND,
+          reboundFiles = 1,
+        )
+      )
+    }
+  }
+
+  var updatedPresentations = 0
+  for (changedFile in changedFiles) {
+    val managers = managerByFile[changedFile].orEmpty()
+    for (manager in managers) {
+      manager.updateFilePresentation(changedFile)
+      updatedPresentations++
+    }
+  }
+
+  val requestedBindings = normalizedRequestsByPath.values.sumOf { it.size }
+  val report = AgentChatConcreteCodexTabRebindReport(
+    requestedBindings = requestedBindings,
+    reboundBindings = reboundBindings,
+    reboundFiles = changedFiles.size,
+    updatedPresentations = updatedPresentations,
+    outcomesByPath = outcomesByPath,
+  )
+  LOG.debug {
+    "rebindOpenConcreteCodexTabs requestedBindings=${report.requestedBindings}, reboundBindings=${report.reboundBindings}, " +
+    "reboundFiles=${report.reboundFiles}, updatedPresentations=${report.updatedPresentations}, paths=${report.outcomesByPath.size}"
+  }
+  return report
+}
+
+fun clearOpenConcreteCodexNewThreadRebindAnchors(
+  tabsByProjectPath: Map<String, List<AgentChatConcreteCodexTabSnapshot>>,
+): Int {
+  if (tabsByProjectPath.isEmpty()) {
+    return 0
+  }
+
+  val normalizedTabsByPath = LinkedHashMap<String, List<AgentChatConcreteCodexTabSnapshot>>()
+  for ((projectPath, tabs) in tabsByProjectPath) {
+    if (tabs.isEmpty()) {
+      continue
+    }
+    normalizedTabsByPath[normalizeAgentWorkbenchPath(projectPath)] = tabs
+  }
+  if (normalizedTabsByPath.isEmpty()) {
+    return 0
+  }
+
+  val tabsService = service<AgentChatTabsService>()
+  val concreteFilesByPathAndTabKey = LinkedHashMap<String, LinkedHashMap<String, AgentChatVirtualFile>>()
+  for (project in ProjectManager.getInstance().openProjects) {
+    val manager = project.serviceIfCreated<FileEditorManager>() ?: continue
+    for (openFile in manager.openFiles) {
+      val chatFile = openFile as? AgentChatVirtualFile ?: continue
+      if (
+        chatFile.provider != AgentSessionProvider.CODEX ||
+        chatFile.isPendingThread ||
+        chatFile.subAgentId != null
+      ) {
+        continue
+      }
+      concreteFilesByPathAndTabKey
+        .computeIfAbsent(normalizeAgentWorkbenchPath(chatFile.projectPath)) { LinkedHashMap() }
+        .putIfAbsent(chatFile.tabKey, chatFile)
+    }
+  }
+
+  var cleared = 0
+  for ((normalizedPath, tabs) in normalizedTabsByPath) {
+    for (tab in tabs) {
+      val concreteFile = concreteFilesByPathAndTabKey[normalizedPath]?.get(tab.tabKey) ?: continue
+      if (
+        concreteFile.threadIdentity != tab.currentThreadIdentity ||
+        concreteFile.newThreadRebindRequestedAtMs != tab.newThreadRebindRequestedAtMs
+      ) {
+        continue
+      }
+      if (!concreteFile.updateNewThreadRebindRequestedAtMs(newThreadRebindRequestedAtMs = null)) {
+        continue
+      }
+      tabsService.upsert(concreteFile.toSnapshot())
+      cleared++
+    }
+  }
+  return cleared
+}
+
 suspend fun updateOpenAgentChatTabPresentation(
   titleByPathAndThreadIdentity: Map<Pair<String, String>, String>,
   activityByPathAndThreadIdentity: Map<Pair<String, String>, AgentThreadActivity>,
@@ -450,7 +805,7 @@ suspend fun updateOpenAgentChatTabPresentation(
       val manager = project.serviceIfCreated<FileEditorManager>() as? FileEditorManagerEx ?: continue
       for (openFile in manager.openFiles) {
         val chatFile = openFile as? AgentChatVirtualFile ?: continue
-        managerByFile.getOrPut(chatFile) { LinkedHashSet() }.add(manager)
+        managerByFile.computeIfAbsent(chatFile) { LinkedHashSet() }.add(manager)
         val key = normalizeAgentWorkbenchPath(chatFile.projectPath) to chatFile.threadIdentity
         val targetTitle = titleByPathAndThreadIdentity[key]
         val targetActivity = activityByPathAndThreadIdentity[key]
@@ -509,8 +864,29 @@ suspend fun updateOpenAgentChatTabTitles(
   )
 }
 
+suspend fun collectSelectedChatThreadIdentity(): Pair<AgentSessionProvider, String>? = withContext(Dispatchers.EDT) {
+  for (project in ProjectManager.getInstance().openProjects) {
+    val selectionService = project.serviceIfCreated<AgentChatTabSelectionService>() ?: continue
+    val selection = selectionService.selectedChatTab.value ?: continue
+    val identity = parseAgentThreadIdentity(selection.threadIdentity) ?: continue
+    val provider = AgentSessionProvider.fromOrNull(identity.providerId) ?: continue
+    return@withContext provider to identity.threadId
+  }
+  null
+}
+
 private fun emptyPendingCodexTabRebindReport(): AgentChatPendingCodexTabRebindReport {
   return AgentChatPendingCodexTabRebindReport(
+    requestedBindings = 0,
+    reboundBindings = 0,
+    reboundFiles = 0,
+    updatedPresentations = 0,
+    outcomesByPath = emptyMap(),
+  )
+}
+
+private fun emptyConcreteCodexTabRebindReport(): AgentChatConcreteCodexTabRebindReport {
+  return AgentChatConcreteCodexTabRebindReport(
     requestedBindings = 0,
     reboundBindings = 0,
     reboundFiles = 0,
@@ -527,6 +903,19 @@ private fun findExistingChat(
   for (openFile in openFiles) {
     val chatFile = openFile as? AgentChatVirtualFile ?: continue
     if (chatFile.matches(threadIdentity, subAgentId)) {
+      return chatFile
+    }
+  }
+  return null
+}
+
+private fun findExistingChatByTabKey(
+  openFiles: Array<VirtualFile>,
+  tabKey: String,
+): AgentChatVirtualFile? {
+  for (openFile in openFiles) {
+    val chatFile = openFile as? AgentChatVirtualFile ?: continue
+    if (chatFile.tabKey == tabKey) {
       return chatFile
     }
   }

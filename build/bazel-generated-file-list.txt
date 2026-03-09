@@ -226,6 +226,7 @@ fleet/build/http
 fleet/build/license
 fleet/build/platform
 fleet/build/s3
+fleet/build/scrambling
 fleet/build/sign
 fleet/bundles
 fleet/codecache
@@ -509,6 +510,9 @@ libraries/xml-rpc
 libraries/xstream
 libraries/xtext-xbase
 libraries/xz
+module-set-plugins/generated/intellij.moduleSet.plugin.main
+module-set-plugins/generated/intellij.moduleSet.plugin.recentFiles
+module-set-plugins/generated/intellij.moduleSet.plugin.vcs.frontend
 mps/build
 mps/build/intellij.mps.resources
 notebooks/notebook-ui
@@ -813,7 +817,6 @@ platform/testFramework/junit5/projectStructure
 platform/testFramework/monorepo
 platform/testFramework/selfContainedProjects
 platform/testFramework/teamCity
-platform/testFramework/ui
 platform/testRunner
 platform/threadDumpParser
 platform/tips-of-the-day
@@ -851,6 +854,7 @@ platform/vcs-api
 platform/vcs-api/shared
 platform/vcs-api/vcs-api-core
 platform/vcs-impl
+platform/vcs-impl/debugger
 platform/vcs-impl/exec
 platform/vcs-impl/frontend
 platform/vcs-impl/lang
@@ -894,6 +898,8 @@ plugins/agent-workbench/filewatch
 plugins/agent-workbench/json
 plugins/agent-workbench/plugin
 plugins/agent-workbench/prompt
+plugins/agent-workbench/prompt-testrunner
+plugins/agent-workbench/prompt-vcs
 plugins/agent-workbench/sessions
 plugins/agent-workbench/sessions-core
 plugins/ant
@@ -1031,6 +1037,7 @@ plugins/gradle/native
 plugins/gradle/native/tooling
 plugins/gradle/plugin
 plugins/gradle/properties
+plugins/gradle/settings
 plugins/gradle/toml
 plugins/gradle/tooling-extension-api
 plugins/gradle/tooling-extension-impl
@@ -1412,7 +1419,7 @@ plugins/maven-server-api
 plugins/maven-server-api/test
 plugins/maven/artifact-resolver-m31
 plugins/maven/artifact-resolver/common
-plugins/maven/error-prone-compiler
+plugins/maven/groovy
 plugins/maven/jps-plugin
 plugins/maven/maven-event-listener
 plugins/maven/maven-server-indexer
@@ -1421,6 +1428,8 @@ plugins/maven/maven3-server-common
 plugins/maven/maven3-server-impl
 plugins/maven/maven36-server-impl
 plugins/maven/maven40-server-impl
+plugins/maven/performanceTesting
+plugins/maven/proofreading
 plugins/maven/src/test
 plugins/maven/testFramework
 plugins/mcp-server
@@ -1515,9 +1524,6 @@ plugins/ui-designer/jps-plugin/tests
 plugins/webp
 plugins/xpath
 plugins/xpath/xslt-rt
-plugins/xslt-debugger
-plugins/xslt-debugger/engine
-plugins/xslt-debugger/engine/impl
 plugins/yaml
 plugins/yaml/backend
 python

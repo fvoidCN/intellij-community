@@ -6,6 +6,7 @@ import com.intellij.driver.sdk.PsiFile
 import com.intellij.driver.sdk.PsiManager
 import com.intellij.driver.sdk.invokeAction
 import com.intellij.driver.sdk.invokeActionWithRetries
+import com.intellij.driver.sdk.plugins.notebooks.NotebookEditorInfoService
 import com.intellij.driver.sdk.singleProject
 import com.intellij.driver.sdk.ui.Finder
 import com.intellij.driver.sdk.ui.UiText.Companion.asString
@@ -27,9 +28,7 @@ import com.intellij.driver.sdk.ui.components.elements.JcefOffScreenViewComponent
 import com.intellij.driver.sdk.ui.components.elements.LetsPlotComponent
 import com.intellij.driver.sdk.ui.components.elements.NotebookTableOutputUi
 import com.intellij.driver.sdk.ui.components.elements.popup
-import com.intellij.driver.sdk.ui.hasFocus
 import com.intellij.driver.sdk.ui.pasteText
-import com.intellij.driver.sdk.ui.should
 import com.intellij.driver.sdk.ui.ui
 import com.intellij.driver.sdk.waitFor
 import com.intellij.driver.sdk.waitForCodeAnalysis
@@ -37,7 +36,6 @@ import com.intellij.driver.sdk.waitNotNull
 import org.intellij.lang.annotations.Language
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -122,6 +120,10 @@ class NotebookEditorUiComponent(private val data: ComponentData) : JEditorUiComp
   val foldingBars: List<UiComponent>
     get() = xx("//div[@class='EditorCellFoldingBarComponent']").list()
 
+  val selectedCellOrdinal: Int?
+    get() = driver.service<NotebookEditorInfoService>(driver.singleProject())
+      .getSelectedCellOrdinal(editor)
+
   override val editorComponent: EditorComponentImpl
     get() = when {
       data.xpath.contains("EditorCompositePanel") -> {
@@ -187,7 +189,6 @@ class NotebookEditorUiComponent(private val data: ComponentData) : JEditorUiComp
   fun restartKernel(waitForFinish: Duration? = null) {
     restartKernelButton.run {
       strictClick()
-      restartKernelButton.waitNotFound()
       waitForFinish?.let { waitFound(waitForFinish) }
     }
   }
@@ -330,59 +331,6 @@ fun Driver.createNewNotebook(name: String = "New Notebook", type: NotebookType) 
 
     waitFor("the editor is present") {
       notebookEditor().present()
-    }
-  }
-}
-
-fun Driver.createNewNotebookWithMouse(name: String = "New Notebook", type: NotebookType) {
-  ideFrame {
-    waitFor("Project view should present", timeout = 1.minutes) {
-      leftToolWindowToolbar.projectButton.open()
-      projectView().present()
-    }
-    projectView {
-      projectViewTree.run {
-        waitFor("wait for project tree to load", 30.seconds) {
-          getAllTexts().isNotEmpty()
-        }
-        moveMouse()
-      }
-    }
-
-    val newFileButton = x { byAccessibleName("New File or Directory…") }
-
-    should("New notebook button should be pressed", timeout = 1.minutes) {
-      should(message = "new file popup should present and focused", timeout = 30.seconds) {
-        newFileButton.strictClick()
-        hasFocus(popup())
-      }
-
-      popup().run {
-        waitOneText("${type.typeName} Notebook").strictClick()
-        hasSubtext("New ${type.typeName} Notebook")
-      }
-    }
-
-    popup().run {
-      keyboard {
-        waitFor("expect $name in the popup") {
-          driver.ui.pasteText(name)
-          getAllTexts().any { it.text == name }
-        }
-        enter() // submit the popup
-      }
-    }
-    projectView {
-      projectViewTree.run {
-        waitOneText(message = "File name should present in project tree", timeout = 15.seconds) {
-          it.text == "$name.ipynb"
-        }
-      }
-    }
-  }
-  withNotebookEditor {
-    waitFor("the editor is present", timeout = 1.minutes) {
-      notebookCellEditors.isNotEmpty()
     }
   }
 }

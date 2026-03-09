@@ -25,6 +25,9 @@ import kotlin.math.min
 
 private const val MAX_SNIPPET_CHARS = 2_000
 private const val CARET_CONTEXT_LINE_RADIUS = 3
+private const val EDITOR_CONTEXT_FILE_ITEM_ID = "editor.file"
+private const val EDITOR_CONTEXT_SYMBOL_ITEM_ID = "editor.symbol"
+private const val EDITOR_CONTEXT_SNIPPET_ITEM_ID = "editor.snippet"
 
 internal object AgentPromptEditorContextSupport {
   fun buildSnapshotFromInvocation(invocationData: AgentPromptInvocationData): AgentEditorContextSnapshot? {
@@ -50,6 +53,24 @@ internal object AgentPromptEditorContextSupport {
 
   fun buildContextItems(snapshot: AgentEditorContextSnapshot): List<AgentPromptContextItem> {
     val items = ArrayList<AgentPromptContextItem>(3)
+
+    val fileItem = snapshot.filePath
+      ?.takeIf { it.isNotBlank() }
+      ?.let { filePath ->
+        AgentPromptContextItem(
+          rendererId = AgentPromptContextRendererIds.FILE,
+          title = AgentPromptBundle.message("context.file.title"),
+          body = filePath,
+          payload = AgentPromptPayload.obj("path" to AgentPromptPayload.str(filePath)),
+          itemId = EDITOR_CONTEXT_FILE_ITEM_ID,
+          source = "editor",
+          truncation = AgentPromptContextTruncation.none(filePath.length),
+        )
+      }
+    if (fileItem != null) {
+      items += fileItem
+    }
+
     val snippet = snapshot.snippet
     val snippetTitleKey = if (snippet.fromSelection) {
       "context.snippet.selection.title"
@@ -63,11 +84,27 @@ internal object AgentPromptEditorContextSupport {
       "selection" to AgentPromptPayload.bool(snippet.fromSelection),
     )
     snapshot.language?.takeIf { it.isNotBlank() }?.let { snippetPayloadFields["language"] = AgentPromptPayload.str(it) }
+    val symbolName = normalizeSymbolName(snapshot.symbolName)
+    if (symbolName != null) {
+      items += AgentPromptContextItem(
+        rendererId = AgentPromptContextRendererIds.SYMBOL,
+        title = AgentPromptBundle.message("context.symbol.title"),
+        body = symbolName,
+        payload = AgentPromptPayload.obj("symbol" to AgentPromptPayload.str(symbolName)),
+        itemId = EDITOR_CONTEXT_SYMBOL_ITEM_ID,
+        parentItemId = fileItem?.itemId,
+        source = "editor",
+        truncation = AgentPromptContextTruncation.none(symbolName.length),
+      )
+    }
+
     val snippetItem = AgentPromptContextItem(
       rendererId = AgentPromptContextRendererIds.SNIPPET,
       title = AgentPromptBundle.message(snippetTitleKey, snippet.startLine, snippet.endLine),
       body = snippet.text,
       payload = AgentPromptPayloadValue.Obj(snippetPayloadFields),
+      itemId = EDITOR_CONTEXT_SNIPPET_ITEM_ID,
+      parentItemId = fileItem?.itemId,
       source = "editor",
       truncation = AgentPromptContextTruncation(
         originalChars = snippet.originalChars,
@@ -75,31 +112,6 @@ internal object AgentPromptEditorContextSupport {
         reason = snippet.truncationReason,
       ),
     )
-
-    if (!snapshot.filePath.isNullOrBlank()) {
-      val filePath = snapshot.filePath
-      items += AgentPromptContextItem(
-        rendererId = AgentPromptContextRendererIds.FILE,
-        title = AgentPromptBundle.message("context.file.title"),
-        body = filePath,
-        payload = AgentPromptPayload.obj("path" to AgentPromptPayload.str(filePath)),
-        source = "editor",
-        truncation = AgentPromptContextTruncation.none(filePath.length),
-      )
-    }
-
-    if (!snapshot.symbolName.isNullOrBlank()) {
-      val symbolName = snapshot.symbolName
-      items += AgentPromptContextItem(
-        rendererId = AgentPromptContextRendererIds.SYMBOL,
-        title = AgentPromptBundle.message("context.symbol.title"),
-        body = symbolName,
-        payload = AgentPromptPayload.obj("symbol" to AgentPromptPayload.str(symbolName)),
-        source = "editor",
-        truncation = AgentPromptContextTruncation.none(symbolName.length),
-      )
-    }
-
     items += snippetItem
 
     return items
@@ -136,14 +148,29 @@ internal object AgentPromptEditorContextSupport {
       var element = file.findElementAt(offset)
       while (element != null) {
         val namedElement = element as? PsiNamedElement
-        val name = namedElement?.name
-        if (!name.isNullOrBlank()) {
+        val name = normalizeSymbolName(namedElement?.name)
+        if (name != null) {
           return@runReadActionBlocking name
         }
         element = element.parent
       }
       null
     }
+  }
+
+  private fun normalizeSymbolName(rawName: String?): String? {
+    val normalized = rawName
+      ?.trim()
+      ?.takeIf { it.isNotEmpty() }
+      ?: return null
+    if (isPlaceholderSymbolName(normalized)) {
+      return null
+    }
+    return normalized
+  }
+
+  private fun isPlaceholderSymbolName(name: String): Boolean {
+    return name.length >= 2 && name.first() == '<' && name.last() == '>'
   }
 
   private fun extractSnippet(editor: Editor): AgentPromptSnippet? {

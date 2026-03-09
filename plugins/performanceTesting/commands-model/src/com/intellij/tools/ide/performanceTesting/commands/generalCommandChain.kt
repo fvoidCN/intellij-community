@@ -633,8 +633,13 @@ fun <T : CommandChain> T.selectText(startLine: Int, startColumn: Int, endLine: I
   addCommand("${CMD_PREFIX}selectText", startLine.toString(), startColumn.toString(), endLine.toString(), endColumn.toString())
 }
 
-fun <T : CommandChain> T.showFileStructureDialog(): T = apply {
-  addCommand("${CMD_PREFIX}showFileStructureDialog")
+fun <T : CommandChain> T.showFileStructureDialog(isSplitFileStructure: Boolean): T = apply {
+  if (!isSplitFileStructure) {
+    addCommand("${CMD_PREFIX}showFileStructureDialogClassic")
+  }
+  else {
+    addCommand("${CMD_PREFIX}showFileStructureDialogSplit")
+  }
 }
 
 fun <T : CommandChain> T.importMavenProject(): T = apply {

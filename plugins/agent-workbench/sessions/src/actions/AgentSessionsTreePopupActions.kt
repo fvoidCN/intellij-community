@@ -9,9 +9,11 @@ import com.intellij.agent.workbench.sessions.core.AgentSubAgent
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionProviderBridge
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionProviderBridges
 import com.intellij.agent.workbench.sessions.core.providers.hasEntries
+import com.intellij.agent.workbench.sessions.frame.AgentWorkbenchDedicatedFrameProjectManager
 import com.intellij.agent.workbench.sessions.model.ArchiveThreadTarget
-import com.intellij.agent.workbench.sessions.service.AgentSessionsService
-import com.intellij.agent.workbench.sessions.state.AgentSessionsTreeUiStateService
+import com.intellij.agent.workbench.sessions.service.AgentSessionLaunchService
+import com.intellij.agent.workbench.sessions.state.AgentSessionUiPreferencesStateService
+import com.intellij.agent.workbench.sessions.state.AgentSessionsStateStore
 import com.intellij.agent.workbench.sessions.tree.SessionTreeId
 import com.intellij.agent.workbench.sessions.tree.SessionTreeNode
 import com.intellij.agent.workbench.sessions.tree.pathForMoreThreadsNode
@@ -47,6 +49,7 @@ internal fun resolveAgentSessionsTreePopupActionContext(event: AnActionEvent): A
 
 internal class AgentSessionsTreePopupOpenAction : DumbAwareAction {
   private val resolveContext: (AnActionEvent) -> AgentSessionsTreePopupActionContext?
+  private val isDedicatedProject: (Project) -> Boolean
   private val openProject: (String) -> Unit
   private val openThread: (String, AgentSessionThread, Project) -> Unit
   private val openSubAgent: (String, AgentSessionThread, AgentSubAgent, Project) -> Unit
@@ -54,20 +57,23 @@ internal class AgentSessionsTreePopupOpenAction : DumbAwareAction {
   @Suppress("unused")
   constructor() {
     resolveContext = ::resolveAgentSessionsTreePopupActionContext
-    openProject = { path -> service<AgentSessionsService>().openOrFocusProject(path) }
-    openThread = { path, thread, project -> service<AgentSessionsService>().openChatThread(path, thread, project) }
+    isDedicatedProject = AgentWorkbenchDedicatedFrameProjectManager::isDedicatedProject
+    openProject = { path -> service<AgentSessionLaunchService>().openOrFocusProject(path) }
+    openThread = { path, thread, project -> service<AgentSessionLaunchService>().openChatThread(path, thread, project) }
     openSubAgent = { path, thread, subAgent, project ->
-      service<AgentSessionsService>().openChatSubAgent(path, thread, subAgent, project)
+      service<AgentSessionLaunchService>().openChatSubAgent(path, thread, subAgent, project)
     }
   }
 
   internal constructor(
     resolveContext: (AnActionEvent) -> AgentSessionsTreePopupActionContext?,
+    isDedicatedProject: (Project) -> Boolean = AgentWorkbenchDedicatedFrameProjectManager::isDedicatedProject,
     openProject: (String) -> Unit,
     openThread: (String, AgentSessionThread, Project) -> Unit,
     openSubAgent: (String, AgentSessionThread, AgentSubAgent, Project) -> Unit,
   ) {
     this.resolveContext = resolveContext
+    this.isDedicatedProject = isDedicatedProject
     this.openProject = openProject
     this.openThread = openThread
     this.openSubAgent = openSubAgent
@@ -75,8 +81,9 @@ internal class AgentSessionsTreePopupOpenAction : DumbAwareAction {
 
   override fun update(e: AnActionEvent) {
     val context = resolveContext(e)
+    val dedicatedFrame = context?.let { isDedicatedProject(it.project) } == true
     val canOpen = when (context?.node) {
-      is SessionTreeNode.Project -> !context.node.project.isOpen
+      is SessionTreeNode.Project -> !context.node.project.isOpen || dedicatedFrame
       is SessionTreeNode.Worktree,
       is SessionTreeNode.Thread,
       is SessionTreeNode.SubAgent -> true
@@ -113,8 +120,8 @@ internal class AgentSessionsTreePopupMoreAction : DumbAwareAction {
   @Suppress("unused")
   constructor() {
     resolveContext = ::resolveAgentSessionsTreePopupActionContext
-    showMoreProjects = { service<AgentSessionsService>().showMoreProjects() }
-    showMoreThreads = { path -> service<AgentSessionsService>().showMoreThreads(path) }
+    showMoreProjects = { service<AgentSessionsStateStore>().showMoreProjects() }
+    showMoreThreads = { path -> service<AgentSessionsStateStore>().showMoreThreads(path) }
   }
 
   internal constructor(
@@ -155,11 +162,11 @@ internal class AgentSessionsTreePopupMoreAction : DumbAwareAction {
 }
 
 internal class AgentSessionsTreePopupNewThreadGroup @JvmOverloads constructor(
-  private val resolveContext: (AnActionEvent) -> AgentSessionsTreePopupActionContext? =
+    private val resolveContext: (AnActionEvent) -> AgentSessionsTreePopupActionContext? =
     ::resolveAgentSessionsTreePopupActionContext,
-  private val allBridges: () -> List<AgentSessionProviderBridge> = AgentSessionProviderBridges::allBridges,
-  private val createNewSession: (String, AgentSessionProvider, AgentSessionLaunchMode, Project) -> Unit = ::createNewThreadViaService,
-  private val lastUsedProvider: () -> AgentSessionProvider? = { service<AgentSessionsTreeUiStateService>().getLastUsedProvider() },
+    private val allBridges: () -> List<AgentSessionProviderBridge> = AgentSessionProviderBridges::allBridges,
+    private val createNewSession: (String, AgentSessionProvider, AgentSessionLaunchMode, Project) -> Unit = ::createNewThreadViaService,
+  private val lastUsedProvider: () -> AgentSessionProvider? = { service<AgentSessionUiPreferencesStateService>().getLastUsedProvider() },
 ) : ActionGroup(), DumbAware {
 
   override fun update(e: AnActionEvent) {

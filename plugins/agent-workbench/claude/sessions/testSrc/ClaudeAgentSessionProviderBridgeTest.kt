@@ -5,6 +5,8 @@ import com.intellij.agent.workbench.sessions.core.AgentSessionLaunchMode
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptContextItem
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptContextRendererIds
 import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptInitialMessageRequest
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessageStartupPolicy
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessageTimeoutPolicy
 import com.intellij.testFramework.junit5.TestApplication
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -14,34 +16,42 @@ class ClaudeAgentSessionProviderBridgeTest {
   private val bridge = ClaudeAgentSessionProviderBridge()
 
   @Test
-  fun buildNewEntryCommand() {
-    assertThat(bridge.buildNewEntryCommand())
+  fun buildNewEntryLaunchSpec() {
+    assertThat(bridge.buildNewEntryLaunchSpec().command)
       .containsExactly("claude")
+    assertThat(bridge.buildNewEntryLaunchSpec().envVariables)
+      .containsExactlyEntriesOf(mapOf("DISABLE_AUTOUPDATER" to "1"))
   }
 
   @Test
-  fun buildResumeCommand() {
-    assertThat(bridge.buildResumeCommand("session-1"))
+  fun buildResumeLaunchSpec() {
+    assertThat(bridge.buildResumeLaunchSpec("session-1").command)
       .containsExactly("claude", "--resume", "session-1")
+    assertThat(bridge.buildResumeLaunchSpec("session-1").envVariables)
+      .containsExactlyEntriesOf(mapOf("DISABLE_AUTOUPDATER" to "1"))
   }
 
   @Test
-  fun buildYoloCommand() {
-    assertThat(bridge.buildNewSessionCommand(AgentSessionLaunchMode.YOLO))
+  fun buildYoloLaunchSpec() {
+    assertThat(bridge.buildNewSessionLaunchSpec(AgentSessionLaunchMode.YOLO).command)
       .containsExactly("claude", "--dangerously-skip-permissions")
   }
 
   @Test
-  fun buildCommandWithInitialPromptForResumeCommand() {
-    val resumeCommand = bridge.buildResumeCommand("session-1")
+  fun buildLaunchSpecWithInitialPromptForResumeCommand() {
+    val resumeLaunchSpec = bridge.buildResumeLaunchSpec("session-1")
 
-    assertThat(bridge.buildCommandWithInitialPrompt(resumeCommand, "-summarize\nchanges"))
+    val launchSpec = bridge.buildLaunchSpecWithInitialPrompt(resumeLaunchSpec, "-summarize\nchanges")
+
+    assertThat(launchSpec.command)
       .containsExactly("claude", "--resume", "session-1", "--", "-summarize\nchanges")
+    assertThat(launchSpec.envVariables)
+      .containsExactlyEntriesOf(mapOf("DISABLE_AUTOUPDATER" to "1"))
   }
 
   @Test
   fun composeInitialMessageUsesCompactContextBlock() {
-    val message = bridge.composeInitialMessage(
+    val plan = bridge.buildInitialMessagePlan(
       AgentPromptInitialMessageRequest(
         prompt = "Summarize changes",
         contextItems = listOf(
@@ -54,10 +64,12 @@ class ClaudeAgentSessionProviderBridgeTest {
         ),
       )
     )
+    val message = checkNotNull(plan.message)
 
+    assertThat(plan.startupPolicy).isEqualTo(AgentInitialMessageStartupPolicy.TRY_STARTUP_COMMAND)
+    assertThat(plan.timeoutPolicy).isEqualTo(AgentInitialMessageTimeoutPolicy.ALLOW_TIMEOUT_FALLBACK)
     assertThat(message).startsWith("Summarize changes\n\n### IDE Context")
-    assertThat(message).contains("paths:")
-    assertThat(message).contains("file: /tmp/demo.kt")
+    assertThat(message).contains("path: /tmp/demo.kt")
     assertThat(message).doesNotContain("soft-cap:")
     assertThat(message).doesNotContain("Metadata:")
     assertThat(message).doesNotContain("Items:")

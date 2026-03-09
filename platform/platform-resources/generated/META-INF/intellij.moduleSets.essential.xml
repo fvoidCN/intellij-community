@@ -167,6 +167,8 @@
     <!-- endregion -->
 
     <!-- region direct modules -->
+    <module name="intellij.platform.execution" loading="embedded"/>
+    <module name="intellij.platform.execution.impl" loading="embedded"/>
     <module name="intellij.platform.lang.core" loading="embedded"/>
     <module name="intellij.platform.lang" loading="embedded"/>
     <module name="intellij.platform.lang.impl" loading="embedded"/>
@@ -237,12 +239,6 @@
     <module name="intellij.platform.debugger.impl.ui" loading="embedded"/>
     <module name="intellij.platform.debugger" loading="embedded"/>
     <module name="intellij.platform.debugger.impl" loading="embedded"/>
-    <!-- endregion -->
-
-    <!-- region nested: recentFiles -->
-    <module name="intellij.platform.recentFiles"/>
-    <module name="intellij.platform.recentFiles.frontend"/>
-    <module name="intellij.platform.recentFiles.backend"/>
     <!-- endregion -->
 
     <!-- region direct modules -->

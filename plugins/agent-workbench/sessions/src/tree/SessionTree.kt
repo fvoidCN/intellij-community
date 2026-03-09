@@ -18,7 +18,7 @@ import com.intellij.agent.workbench.sessions.model.AgentSessionProviderWarning
 import com.intellij.agent.workbench.sessions.model.AgentWorktree
 import com.intellij.agent.workbench.sessions.model.ArchiveThreadTarget
 import com.intellij.agent.workbench.sessions.state.DEFAULT_VISIBLE_THREAD_COUNT
-import com.intellij.agent.workbench.sessions.state.SessionsTreeUiState
+import com.intellij.agent.workbench.sessions.state.SessionTreeUiState
 import com.intellij.agent.workbench.sessions.util.isAgentSessionNewSessionId
 import com.intellij.agent.workbench.sessions.util.parseAgentSessionIdentity
 import com.intellij.openapi.util.NlsSafe
@@ -27,12 +27,14 @@ internal data class SessionTreeModel(
   val rootIds: List<SessionTreeId>,
   val entriesById: Map<SessionTreeId, SessionTreeModelEntry>,
   val autoOpenProjects: List<SessionTreeId.Project>,
+  val duplicateProjectNames: Set<String> = emptySet(),
 ) {
   companion object {
     val EMPTY: SessionTreeModel = SessionTreeModel(
       rootIds = emptyList(),
       entriesById = emptyMap(),
       autoOpenProjects = emptyList(),
+      duplicateProjectNames = emptySet(),
     )
   }
 }
@@ -56,12 +58,17 @@ internal data class VisibleProjectsResult(
 )
 
 internal fun buildSessionTreeModel(
-  projects: List<AgentProjectSessions>,
-  visibleClosedProjectCount: Int,
-  visibleThreadCounts: Map<String, Int>,
-  treeUiState: SessionsTreeUiState,
+    projects: List<AgentProjectSessions>,
+    visibleClosedProjectCount: Int,
+    visibleThreadCounts: Map<String, Int>,
+    treeUiState: SessionTreeUiState,
 ): SessionTreeModel {
   val visibleProjectsResult = computeVisibleProjects(projects, visibleClosedProjectCount)
+  val duplicateProjectNames = visibleProjectsResult.visibleProjects
+    .groupingBy { it.name }
+    .eachCount()
+    .filterValues { it > 1 }
+    .keys
   val modelBuilder = SessionTreeModelBuilder(visibleThreadCounts)
   val baseModel = modelBuilder.build(visibleProjectsResult)
   val autoOpenProjects = visibleProjectsResult.visibleProjects
@@ -73,7 +80,7 @@ internal fun buildSessionTreeModel(
     }
     .filterNot { treeUiState.isProjectCollapsed(it.path) }
     .map { SessionTreeId.Project(it.path) }
-  return baseModel.copy(autoOpenProjects = autoOpenProjects)
+  return baseModel.copy(autoOpenProjects = autoOpenProjects, duplicateProjectNames = duplicateProjectNames)
 }
 
 internal fun diffSessionTreeModels(
@@ -88,7 +95,8 @@ internal fun diffSessionTreeModels(
     if (oldEntry.childIds != newEntry.childIds) {
       structureChangedIds += id
     }
-    if (sessionTreeNodePresentation(oldEntry.node) != sessionTreeNodePresentation(newEntry.node)) {
+    if (sessionTreeNodePresentation(oldEntry.node, oldModel.duplicateProjectNames)
+        != sessionTreeNodePresentation(newEntry.node, newModel.duplicateProjectNames)) {
       contentChangedIds += id
     }
   }
@@ -102,12 +110,16 @@ internal fun diffSessionTreeModels(
 
 private data class ProjectTreeRowPresentation(
   val name: @NlsSafe String,
+  val usePathAsName: Boolean,
   val isOpen: Boolean,
   val hasOpenWorktree: Boolean,
   val hasWorktrees: Boolean,
   val branch: String?,
+  val buildSystemBadgeId: String?,
   val isLoading: Boolean,
 )
+
+private val DEFAULT_PROJECT_BRANCH_NAMES = setOf("main", "master")
 
 private data class WorktreeTreeRowPresentation(
   val name: @NlsSafe String,
@@ -124,16 +136,18 @@ private data class MoreThreadsTreeRowPresentation(
   val hiddenCount: Int?,
 )
 
-internal fun sessionTreeNodePresentation(node: SessionTreeNode): Any {
+internal fun sessionTreeNodePresentation(node: SessionTreeNode, duplicateProjectNames: Set<String> = emptySet()): Any {
   return when (node) {
     is SessionTreeNode.Project -> {
       val hasWorktrees = node.project.worktrees.isNotEmpty()
       ProjectTreeRowPresentation(
         name = node.project.name,
+        usePathAsName = node.project.name in duplicateProjectNames,
         isOpen = node.project.isOpen,
         hasOpenWorktree = node.project.worktrees.any { it.isOpen },
         hasWorktrees = hasWorktrees,
-        branch = if (hasWorktrees) node.project.branch else null,
+        branch = visibleProjectBranch(node.project),
+        buildSystemBadgeId = node.project.buildSystemBadge?.id,
         isLoading = node.project.isLoading,
       )
     }
@@ -156,6 +170,15 @@ internal fun sessionTreeNodePresentation(node: SessionTreeNode): Any {
     is SessionTreeNode.MoreProjects -> node.hiddenCount
     is SessionTreeNode.MoreThreads -> MoreThreadsTreeRowPresentation(node.hiddenCount)
   }
+}
+
+internal fun visibleProjectBranch(project: AgentProjectSessions): @NlsSafe String? {
+  if (project.worktrees.isNotEmpty()) {
+    return null
+  }
+
+  val branch = project.branch?.takeUnless { it.isBlank() } ?: return null
+  return branch.takeUnless { it in DEFAULT_PROJECT_BRANCH_NAMES }
 }
 
 internal fun computeVisibleProjects(
@@ -498,7 +521,7 @@ internal fun archiveTargetFromThreadNode(
     is SessionTreeId.WorktreeThread -> id.worktreePath
     else -> threadNode.project.path
   }
-  return ArchiveThreadTarget(
+  return ArchiveThreadTarget.Thread(
     path = normalizeAgentWorkbenchPath(path),
     provider = threadNode.thread.provider,
     threadId = threadNode.thread.id,

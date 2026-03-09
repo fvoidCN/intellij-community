@@ -173,7 +173,7 @@ public final class HighlightInfoUpdaterImpl extends HighlightInfoUpdater impleme
         // all maps for a FileViewProvider were gc-ed, we need to dispose the dangling range highlighters from the document markup
         MarkupModelEx markupModel = (MarkupModelEx)DocumentMarkupModel.forDocument(document, project, false);
         if (markupModel != null) {
-          List<HighlightInfo> allInfos = ContainerUtil.mapNotNull(markupModel.getAllHighlighters(), h -> HighlightInfo.fromRangeHighlighter(h));
+          List<HighlightInfo> allInfos = ContainerUtil.mapNotNull(markupModel.getAllHighlighters(), h -> h.isValid() ? HighlightInfo.fromRangeHighlighter(h) : null);
           List<HighlightInfo> infos = ContainerUtil.filter(allInfos, h-> h.toolId != null);
           addEvictedInfos(infos);
         }
@@ -217,17 +217,26 @@ public final class HighlightInfoUpdaterImpl extends HighlightInfoUpdater impleme
   public void dispose() {
   }
 
-  private synchronized void addEvictedInfos(@NotNull List<? extends HighlightInfo> infos) {
+  private void addEvictedInfos(@NotNull List<? extends HighlightInfo> infos) {
     if (!infos.isEmpty()) {
       if (LOG.isTraceEnabled()) {
         LOG.trace("addEvictedInfos: " + StringUtil.join(infos, i->i+(i.getHighlighter()==null ? "" : "; rh:" + i.getHighlighter().getTextRange()), ", ")+currentProgressInfo());
       }
+      Map<Document, Collection<HighlightInfo>> evictedMap = new HashMap<>();
       for (HighlightInfo info : infos) {
         RangeHighlighterEx highlighter = info.getHighlighter();
         if (highlighter != null) {
           Document hostDocument = highlighter.getDocument();
-          Collection<HighlightInfo> evictedInfos = ConcurrencyUtil.computeIfAbsent(hostDocument, EVICTED_PSI_ELEMENTS, ()->new HashSet<>());
-          evictedInfos.addAll(infos);
+          Collection<HighlightInfo> storedInfos = evictedMap.computeIfAbsent(hostDocument, __->new ArrayList<>());
+          storedInfos.addAll(infos);
+        }
+      }
+      synchronized (this) {
+        for (Map.Entry<Document, Collection<HighlightInfo>> entry : evictedMap.entrySet()) {
+          Document document = entry.getKey();
+          Collection<HighlightInfo> evictedInfos = entry.getValue();
+          Collection<HighlightInfo> storedInfos = ConcurrencyUtil.computeIfAbsent(document, EVICTED_PSI_ELEMENTS, () -> ContainerUtil.newConcurrentSet());
+          storedInfos.addAll(evictedInfos);
         }
       }
     }
@@ -614,6 +623,7 @@ public final class HighlightInfoUpdaterImpl extends HighlightInfoUpdater impleme
                                 @NotNull HighlightingSession session,
                                 @NotNull ManagedHighlighterRecycler invalidElementRecycler) {
     if (newInfos.isEmpty()) {
+      // optimization: majority calls are with empty collection
       ToolHighlights toolHighlights0 = getData(psiFile, hostDocument).get(toolId);
       List<? extends HighlightInfo> oldInfos0 = ContainerUtil.notNullize(toolHighlights0 == null ? null : toolHighlights0.elementHighlights.get(visitedPsiElement));
       if (oldInfos0.isEmpty()) {
@@ -743,6 +753,7 @@ public final class HighlightInfoUpdaterImpl extends HighlightInfoUpdater impleme
       hostRange = TextRange.from(0, hostDocument.getTextLength());
     }
     return Arrays.stream(DocumentMarkupModel.forDocument(hostDocument, project, true).getAllHighlighters())
+      .filter(h->h.isValid())
       .map(m -> HighlightInfo.fromRangeHighlighter(m))
       .filter(Objects::nonNull)
       .filter(h->h.toolId != null)

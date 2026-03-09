@@ -4,9 +4,12 @@ package com.intellij.agent.workbench.claude.sessions
 import com.intellij.agent.workbench.common.icons.AgentWorkbenchCommonIcons
 import com.intellij.agent.workbench.sessions.core.AgentSessionLaunchMode
 import com.intellij.agent.workbench.sessions.core.AgentSessionProvider
+import com.intellij.agent.workbench.sessions.core.prompt.AgentPromptInitialMessageRequest
+import com.intellij.agent.workbench.sessions.core.providers.AgentInitialMessagePlan
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionLaunchSpec
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionProviderBridge
 import com.intellij.agent.workbench.sessions.core.providers.AgentSessionSource
+import com.intellij.agent.workbench.sessions.core.providers.AgentSessionTerminalLaunchSpec
 import javax.swing.Icon
 
 internal class ClaudeAgentSessionProviderBridge(
@@ -35,22 +38,45 @@ internal class ClaudeAgentSessionProviderBridge(
 
   override fun isCliAvailable(): Boolean = ClaudeCliSupport.isAvailable()
 
-  override fun buildResumeCommand(sessionId: String): List<String> = ClaudeCliSupport.buildResumeCommand(sessionId)
-
-  override fun buildNewSessionCommand(mode: AgentSessionLaunchMode): List<String> {
-    return ClaudeCliSupport.buildNewSessionCommand(yolo = mode == AgentSessionLaunchMode.YOLO)
+  override fun buildResumeLaunchSpec(sessionId: String): AgentSessionTerminalLaunchSpec {
+    return AgentSessionTerminalLaunchSpec(
+      command = ClaudeCliSupport.buildResumeCommand(sessionId),
+      envVariables = mapOf(CLAUDE_DISABLE_AUTO_UPDATER_ENV to CLAUDE_DISABLE_AUTO_UPDATER_VALUE),
+    )
   }
 
-  override fun buildNewEntryCommand(): List<String> = listOf(ClaudeCliSupport.CLAUDE_COMMAND)
+  override fun buildNewSessionLaunchSpec(mode: AgentSessionLaunchMode): AgentSessionTerminalLaunchSpec {
+    return AgentSessionTerminalLaunchSpec(
+      command = ClaudeCliSupport.buildNewSessionCommand(yolo = mode == AgentSessionLaunchMode.YOLO),
+      envVariables = mapOf(CLAUDE_DISABLE_AUTO_UPDATER_ENV to CLAUDE_DISABLE_AUTO_UPDATER_VALUE),
+    )
+  }
 
-  override fun buildCommandWithInitialPrompt(baseCommand: List<String>, prompt: String): List<String> {
-    return baseCommand + listOf("--", prompt)
+  override fun buildNewEntryLaunchSpec(): AgentSessionTerminalLaunchSpec {
+    return AgentSessionTerminalLaunchSpec(
+      command = listOf(ClaudeCliSupport.CLAUDE_COMMAND),
+      envVariables = mapOf(CLAUDE_DISABLE_AUTO_UPDATER_ENV to CLAUDE_DISABLE_AUTO_UPDATER_VALUE),
+    )
+  }
+
+  override fun buildLaunchSpecWithInitialPrompt(
+    baseLaunchSpec: AgentSessionTerminalLaunchSpec,
+    prompt: String,
+  ): AgentSessionTerminalLaunchSpec {
+    return baseLaunchSpec.copy(command = baseLaunchSpec.command + listOf("--", prompt))
+  }
+
+  override fun buildInitialMessagePlan(request: AgentPromptInitialMessageRequest): AgentInitialMessagePlan {
+    return AgentInitialMessagePlan.composeDefault(request)
   }
 
   override suspend fun createNewSession(path: String, mode: AgentSessionLaunchMode): AgentSessionLaunchSpec {
     return AgentSessionLaunchSpec(
       sessionId = null,
-      command = buildNewSessionCommand(mode),
+      launchSpec = buildNewSessionLaunchSpec(mode),
     )
   }
 }
+
+private const val CLAUDE_DISABLE_AUTO_UPDATER_ENV: String = "DISABLE_AUTOUPDATER"
+private const val CLAUDE_DISABLE_AUTO_UPDATER_VALUE: String = "1"

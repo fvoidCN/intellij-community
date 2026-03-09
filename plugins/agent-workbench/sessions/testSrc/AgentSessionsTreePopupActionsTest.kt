@@ -31,11 +31,13 @@ import org.junit.jupiter.api.Test
 class AgentSessionsTreePopupActionsTest {
   @Test
   fun openActionVisibilityAndDispatchForProjectAndWorktreeThread() {
+    var dedicatedFrame = false
     var openedProjectPath: String? = null
     var openedThreadPath: String? = null
     var openedSubAgentPath: String? = null
     val openAction = AgentSessionsTreePopupOpenAction(
       resolveContext = { event -> resolveAgentSessionsTreePopupActionContext(event) },
+      isDedicatedProject = { dedicatedFrame },
       openProject = { path -> openedProjectPath = path },
       openThread = { path, _, _ -> openedThreadPath = path },
       openSubAgent = { path, _, _, _ -> openedSubAgentPath = path },
@@ -59,6 +61,13 @@ class AgentSessionsTreePopupActionsTest {
     val openProjectEvent = popupEvent(openAction, openProjectContext)
     openAction.update(openProjectEvent)
     assertThat(openProjectEvent.presentation.isEnabledAndVisible).isFalse()
+
+    dedicatedFrame = true
+    openAction.update(openProjectEvent)
+    assertThat(openProjectEvent.presentation.isEnabledAndVisible).isTrue()
+    openedProjectPath = null
+    openAction.actionPerformed(openProjectEvent)
+    assertThat(openedProjectPath).isEqualTo("/work/project-open")
 
     val threadProject = AgentProjectSessions(path = "/work/project-a", name = "Project A", isOpen = true)
     val thread = thread(id = "thread-1", provider = AgentSessionProvider.CODEX)
@@ -126,12 +135,12 @@ class AgentSessionsTreePopupActionsTest {
     )
 
     val project = AgentProjectSessions(path = "/work/project-a", name = "Project A", isOpen = true)
-    val codexTarget = ArchiveThreadTarget(
+    val codexTarget = ArchiveThreadTarget.Thread(
       path = "/work/project-a",
       provider = AgentSessionProvider.CODEX,
       threadId = "codex-1",
     )
-    val claudeTarget = ArchiveThreadTarget(
+    val claudeTarget = ArchiveThreadTarget.Thread(
       path = "/work/project-a",
       provider = AgentSessionProvider.CLAUDE,
       threadId = "claude-1",
@@ -171,7 +180,7 @@ class AgentSessionsTreePopupActionsTest {
   fun archiveActionArchivesTreeContextTargets() {
     var archivedTargets: List<ArchiveThreadTarget>? = null
     val project = AgentProjectSessions(path = "/work/project-a", name = "Project A", isOpen = true)
-    val treeTarget = ArchiveThreadTarget(
+    val treeTarget = ArchiveThreadTarget.Thread(
       path = "/work/project-a",
       provider = AgentSessionProvider.CODEX,
       threadId = "tree-1",

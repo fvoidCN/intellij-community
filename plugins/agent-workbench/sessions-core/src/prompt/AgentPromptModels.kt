@@ -4,12 +4,15 @@ package com.intellij.agent.workbench.sessions.core.prompt
 import com.intellij.agent.workbench.sessions.core.AgentSessionLaunchMode
 import com.intellij.agent.workbench.sessions.core.AgentSessionProvider
 import com.intellij.agent.workbench.sessions.core.AgentSessionThread
+import com.intellij.openapi.util.NlsSafe
 
 data class AgentPromptContextItem(
   @JvmField val rendererId: String,
   @JvmField val title: String?,
   @JvmField val body: String,
   @JvmField val payload: AgentPromptPayloadValue = AgentPromptPayloadValue.Obj.EMPTY,
+  @JvmField val itemId: String? = null,
+  @JvmField val parentItemId: String? = null,
   @JvmField val source: String = "unknown",
   @JvmField val phase: AgentPromptContextContributorPhase? = null,
   @JvmField val truncation: AgentPromptContextTruncation = AgentPromptContextTruncation.none(body.length),
@@ -72,6 +75,7 @@ data class AgentPromptInitialMessageRequest(
   @JvmField val projectPath: String? = null,
   @JvmField val contextItems: List<AgentPromptContextItem> = emptyList(),
   @JvmField val contextEnvelopeSummary: AgentPromptContextEnvelopeSummary? = null,
+  @JvmField val codexPlanModeEnabled: Boolean = false,
 )
 
 data class AgentPromptContextEnvelopeSummary(
@@ -87,6 +91,11 @@ data class AgentPromptLaunchRequest(
   @JvmField val initialMessageRequest: AgentPromptInitialMessageRequest,
   @JvmField val targetThreadId: String? = null,
   @JvmField val preferredDedicatedFrame: Boolean? = null,
+)
+
+data class AgentPromptProjectPathCandidate(
+  @JvmField val path: @NlsSafe String,
+  @JvmField val displayName: @NlsSafe String,
 )
 
 enum class AgentPromptLaunchError {

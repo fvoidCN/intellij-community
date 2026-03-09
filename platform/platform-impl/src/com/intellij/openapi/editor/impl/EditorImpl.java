@@ -1317,9 +1317,12 @@ public final class EditorImpl extends UserDataHolderBase implements EditorEx, Hi
     mySoftWrapModel.reinitSettings();
     myCaretModel.reinitSettings();
     mySelectionModel.reinitSettings();
-    caretRepaintService.setBlinking(mySettings.isBlinkCaret());
-    caretRepaintService.setBlinkPeriod(mySettings.getCaretBlinkPeriod());
-    caretRepaintService.restart();
+    synchronized (caretRepaintService) {
+      caretRepaintService.setEditor(this);
+      caretRepaintService.setBlinking(mySettings.isBlinkCaret());
+      caretRepaintService.setBlinkPeriod(mySettings.getCaretBlinkPeriod());
+      caretRepaintService.restart();
+    }
 
     myView.reinitSettings();
     if (myAdView != null) myAdView.reinitSettings();
@@ -2221,6 +2224,11 @@ public final class EditorImpl extends UserDataHolderBase implements EditorEx, Hi
     myState.setScrollToCaret(scrollToCaret);
   }
 
+  /**
+   * @deprecated For internal editor implementation only.
+   * Use {@link EditorUtil#disposeWithEditor(Editor, Disposable)} instead.
+   */
+  @Deprecated
   public @NotNull Disposable getDisposable() {
     return myDisposable;
   }
@@ -4206,7 +4214,7 @@ public final class EditorImpl extends UserDataHolderBase implements EditorEx, Hi
     for (RangeHighlighter highlighter : myEditorFilteringMarkupModel.getDelegate().getAllHighlighters()) {
       boolean oldAvailable = oldFilter.shouldRender(highlighter);
       boolean newAvailable = myHighlightingFilter.shouldRender(highlighter);
-      if (oldAvailable != newAvailable) {
+      if (highlighter.isValid() && oldAvailable != newAvailable) {
         TextAttributes attributes = highlighter.getTextAttributes(getColorsScheme());
         myMarkupModelListener.attributesChanged((RangeHighlighterEx)highlighter, true,
                                                 EditorUtil.attributesImpactFontStyle(attributes),
@@ -5463,6 +5471,15 @@ public final class EditorImpl extends UserDataHolderBase implements EditorEx, Hi
     if (myProject != null && myVirtualFile != null && replace(CONTAINS_BIDI_TEXT, null, Boolean.TRUE)) {
       EditorNotifications.getInstance(myProject).updateNotifications(myVirtualFile);
     }
+  }
+
+  private boolean hasBidiText() {
+    return Boolean.TRUE.equals(getUserData(CONTAINS_BIDI_TEXT));
+  }
+
+  @ApiStatus.Internal
+  public boolean shouldUseNewSelection() {
+    return !Registry.is("editor.old.full.horizontal.selection.enabled") && !isColumnMode() && !hasBidiText();
   }
 
   @TestOnly

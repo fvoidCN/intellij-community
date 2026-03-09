@@ -867,7 +867,7 @@ public class Py3TypeCheckerInspectionTest extends PyInspectionTestCase {
   // PY-44974
   public void testParenthesizedBitwiseOrUnionOfUnionsAssignNone() {
     doTestByText(
-      "bar: int | ((list | dict) | (float | str)) = <warning descr=\"Expected type 'int | list | dict | float | str', got 'None' instead\">None</warning>");
+      "bar: int | ((list | dict) | (float | str)) = <warning descr=\"Expected type 'int | list[Any] | dict[Any, Any] | float | str', got 'None' instead\">None</warning>");
   }
 
   // PY-44974
@@ -3833,7 +3833,7 @@ public class Py3TypeCheckerInspectionTest extends PyInspectionTestCase {
 
   // PY-85997
   public void testRecursiveProtocolAndImplementationUsingSelf() {
-    fixme("Recursive protocol definitions cause infinite recursion during matching", StackOverflowPreventedException.class, () -> {
+    fixme("Recursive protocol definitions cause infinite recursion during matching", StackOverflowPreventedException.class, "", () -> {
       RecursionManager.assertOnRecursionPrevention(myFixture.getTestRootDisposable());
       doTestByText("""
                      from typing import Self, Protocol
@@ -3854,7 +3854,7 @@ public class Py3TypeCheckerInspectionTest extends PyInspectionTestCase {
 
   // PY-85997
   public void testRecursiveProtocolAndImplementationReferringToItself() {
-    fixme("Recursive protocol definitions cause infinite recursion during matching", StackOverflowPreventedException.class, () -> {
+    fixme("Recursive protocol definitions cause infinite recursion during matching", StackOverflowPreventedException.class, "", () -> {
       RecursionManager.assertOnRecursionPrevention(myFixture.getTestRootDisposable());
       doTestByText("""
                      from typing import Self, Protocol
