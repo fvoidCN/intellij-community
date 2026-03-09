@@ -83,7 +83,7 @@ internal fun DebugMapToolWindow(project: Project) {
       for (group in groups) {
         addNode(
           data = DebugMapNode.Group(group.id, group.name, group.id == activeGroupId,
-                                   group.bookmarks.size + group.breakpoints.size),
+                                   group.bookmarks.size, group.breakpoints.size),
           id = "group-${group.id}",
         ) {
           for (bm in group.bookmarks) {
@@ -230,10 +230,17 @@ private fun GroupRow(node: DebugMapNode.Group) {
       fontWeight = if (node.isActive) FontWeight.Bold else FontWeight.Normal,
       maxLines = 1,
       overflow = TextOverflow.Ellipsis,
-      modifier = Modifier.weight(1f),
+      modifier = Modifier.weight(1f, fill = false),
     )
+    Icon(key = AllIconsKeys.Nodes.Bookmark, contentDescription = null, modifier = Modifier.size(14.dp))
     Text(
-      text = node.itemCount.toString(),
+      text = node.bookmarkCount.toString(),
+      color = COLOR_INACTIVE,
+      maxLines = 1,
+    )
+    Icon(key = AllIconsKeys.Debugger.Db_set_breakpoint, contentDescription = null, modifier = Modifier.size(14.dp))
+    Text(
+      text = node.breakpointCount.toString(),
       color = COLOR_INACTIVE,
       maxLines = 1,
     )
