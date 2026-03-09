@@ -66,7 +66,6 @@
     <orderEntry type="module" module-name="intellij.platform.projectModel" />
     <orderEntry type="library" name="io.github.smiley4.schema.kenerator.core" level="project" />
     <orderEntry type="module" module-name="intellij.platform.debugger.impl" />
-    <orderEntry type="module" module-name="intellij.java.debugger.impl" />
     <orderEntry type="module" module-name="intellij.platform.editor.ui" />
     <orderEntry type="module" module-name="intellij.platform.analysis" />
     <orderEntry type="module" module-name="intellij.platform.lang" />

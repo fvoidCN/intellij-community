@@ -24,5 +24,3 @@ edu/dependencies/build
 native/**/build/
 stale_outputs_checked
 /android
-GEMINI.md
-CLAUDE.md
